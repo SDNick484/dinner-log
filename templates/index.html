@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<form class="search" method="get" action="{{ url_for('index') }}">
+  <input type="search" name="q" value="{{ q }}" placeholder="Search meals, cookbooks, notes…">
+</form>
+
+{% if not meals %}
+  <p class="empty">
+    {% if q %}No dinners match “{{ q }}”.{% else %}Nothing logged yet. Tap <b>+</b> to add tonight's dinner.{% endif %}
+  </p>
+{% endif %}
+
+{% set ns = namespace(month='') %}
+<ul class="meals">
+{% for m in meals %}
+  {% set ml = m.day | month_label %}
+  {% if ml != ns.month %}
+    {% set ns.month = ml %}
+    <li class="month">{{ ml }}</li>
+  {% endif %}
+  <li>
+    <a class="card" href="{{ url_for('meal_detail', meal_id=m.id) }}">
+      {% if m.thumb %}
+        <img src="{{ url_for('photo', filename=m.thumb) }}" alt="" loading="lazy">
+      {% else %}
+        <div class="noimg">🍲</div>
+      {% endif %}
+      <div class="info">
+        <div class="day">{{ m.day | pretty_day }}</div>
+        <div class="name">{{ m.name }}</div>
+        <div class="src">
+          <span class="chip {{ m.source_type }}">{{ types[m.source_type] }}</span>
+          {% if m.source_title %}{{ m.source_title }}{% endif %}
+          {% if m.rating %}<span class="score" title="Rating">★ {{ m.rating }}/10</span>{% endif %}
+        </div>
+      </div>
+    </a>
+  </li>
+{% endfor %}
+</ul>
+
+<a class="fab" href="{{ url_for('new_meal') }}" aria-label="Add dinner">+</a>
+{% endblock %}

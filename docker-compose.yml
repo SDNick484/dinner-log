@@ -1,0 +1,9 @@
+services:
+  dinner-log:
+    build: .
+    container_name: dinner-log
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/data   # meals.db + photos live here; back this folder up

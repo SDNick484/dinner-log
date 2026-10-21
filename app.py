@@ -1,0 +1,233 @@
+"""Dinner Log: a tiny self-hosted app for tracking family dinners.
+
+Flask + SQLite, photos stored on disk. No auth: run it behind your LAN/VPN.
+"""
+import datetime
+import os
+import sqlite3
+import uuid
+
+from flask import (Flask, abort, g, redirect, render_template, request,
+                   send_from_directory, url_for)
+from PIL import Image, ImageOps
+
+DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
+PHOTO_DIR = os.path.join(DATA_DIR, "photos")
+DB_PATH = os.path.join(DATA_DIR, "meals.db")
+os.makedirs(PHOTO_DIR, exist_ok=True)
+
+SOURCE_TYPES = {"cookbook": "Cookbook", "online": "Online",
+                "restaurant": "Restaurant", "original": "Our own"}
+MAX_PHOTO_EDGE = 1600  # phone photos are huge; downscale to keep storage sane
+
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS meals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,                       -- ISO date, YYYY-MM-DD
+    name TEXT NOT NULL,
+    source_type TEXT NOT NULL DEFAULT 'original',
+    source_title TEXT NOT NULL DEFAULT '',   -- cookbook title, site name, or restaurant
+    source_detail TEXT NOT NULL DEFAULT '',  -- page number, URL, or restaurant location
+    notes TEXT NOT NULL DEFAULT '',
+    rating INTEGER CHECK (rating BETWEEN 1 AND 10),  -- NULL = not rated
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS photos (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    meal_id INTEGER NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
+    filename TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_meals_day ON meals(day DESC);
+"""
+
+
+def db():
+    if "db" not in g:
+        g.db = sqlite3.connect(DB_PATH)
+        g.db.row_factory = sqlite3.Row
+        g.db.execute("PRAGMA foreign_keys = ON")
+    return g.db
+
+
+@app.teardown_appcontext
+def close_db(_exc):
+    conn = g.pop("db", None)
+    if conn is not None:
+        conn.close()
+
+
+with sqlite3.connect(DB_PATH) as _c:
+    _c.executescript(SCHEMA)
+    # Upgrade databases created before ratings existed.
+    if "rating" not in [r[1] for r in _c.execute("PRAGMA table_info(meals)")]:
+        _c.execute("ALTER TABLE meals ADD COLUMN rating INTEGER "
+                   "CHECK (rating BETWEEN 1 AND 10)")
+
+
+def save_photos(meal_id, files):
+    for f in files:
+        if not f or not f.filename:
+            continue
+        try:
+            img = Image.open(f.stream)
+            img = ImageOps.exif_transpose(img).convert("RGB")
+        except Exception:
+            continue  # not a readable image; skip it
+        img.thumbnail((MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
+        name = uuid.uuid4().hex + ".jpg"
+        img.save(os.path.join(PHOTO_DIR, name), "JPEG", quality=85, optimize=True)
+        db().execute("INSERT INTO photos (meal_id, filename) VALUES (?, ?)", (meal_id, name))
+
+
+def remove_photo_files(names):
+    for n in names:
+        try:
+            os.remove(os.path.join(PHOTO_DIR, n))
+        except FileNotFoundError:
+            pass
+
+
+def form_values():
+    stype = request.form.get("source_type", "original")
+    if stype not in SOURCE_TYPES:
+        stype = "original"
+    day = request.form.get("day") or datetime.date.today().isoformat()
+    try:
+        datetime.date.fromisoformat(day)
+    except ValueError:
+        day = datetime.date.today().isoformat()
+    raw = request.form.get("rating", "").strip()
+    rating = int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None
+    return {
+        "day": day,
+        "name": request.form.get("name", "").strip() or "Untitled dinner",
+        "source_type": stype,
+        "source_title": request.form.get("source_title", "").strip(),
+        "source_detail": request.form.get("source_detail", "").strip(),
+        "notes": request.form.get("notes", "").strip(),
+        "rating": rating,
+    }
+
+
+def titles_for(source_type):
+    """Past cookbook / restaurant names, for autocomplete."""
+    rows = db().execute(
+        "SELECT DISTINCT source_title FROM meals "
+        "WHERE source_type=? AND source_title != '' ORDER BY source_title COLLATE NOCASE",
+        (source_type,))
+    return [r["source_title"] for r in rows]
+
+
+@app.template_filter("pretty_day")
+def pretty_day(iso):
+    d = datetime.date.fromisoformat(iso)
+    return d.strftime("%a %b ") + str(d.day)
+
+
+@app.template_filter("month_label")
+def month_label(iso):
+    return datetime.date.fromisoformat(iso).strftime("%B %Y")
+
+
+@app.route("/")
+def index():
+    q = request.args.get("q", "").strip()
+    sql = ("SELECT m.*, (SELECT filename FROM photos p WHERE p.meal_id = m.id "
+           "ORDER BY p.id LIMIT 1) AS thumb FROM meals m")
+    args = []
+    if q:
+        sql += (" WHERE m.name LIKE ? OR m.source_title LIKE ? "
+                "OR m.source_detail LIKE ? OR m.notes LIKE ?")
+        args = [f"%{q}%"] * 4
+    sql += " ORDER BY m.day DESC, m.id DESC LIMIT 500"
+    meals = db().execute(sql, args).fetchall()
+    return render_template("index.html", meals=meals, q=q, types=SOURCE_TYPES)
+
+
+@app.route("/new", methods=["GET", "POST"])
+def new_meal():
+    if request.method == "POST":
+        v = form_values()
+        cur = db().execute(
+            "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating) "
+            "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating)", v)
+        save_photos(cur.lastrowid, request.files.getlist("photos"))
+        db().commit()
+        return redirect(url_for("meal_detail", meal_id=cur.lastrowid))
+    meal = {"day": datetime.date.today().isoformat(), "name": "", "source_type": "cookbook",
+            "source_title": "", "source_detail": "", "notes": "", "rating": None}
+    return render_template("form.html", meal=meal, photos=[], types=SOURCE_TYPES,
+                           books=titles_for("cookbook"), places=titles_for("restaurant"),
+                           editing=False)
+
+
+def get_meal(meal_id):
+    meal = db().execute("SELECT * FROM meals WHERE id = ?", (meal_id,)).fetchone()
+    if meal is None:
+        abort(404)
+    photos = db().execute("SELECT * FROM photos WHERE meal_id = ? ORDER BY id", (meal_id,)).fetchall()
+    return meal, photos
+
+
+@app.route("/meal/<int:meal_id>")
+def meal_detail(meal_id):
+    meal, photos = get_meal(meal_id)
+    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES)
+
+
+@app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])
+def edit_meal(meal_id):
+    meal, photos = get_meal(meal_id)
+    if request.method == "POST":
+        v = form_values()
+        v["id"] = meal_id
+        db().execute(
+            "UPDATE meals SET day=:day, name=:name, source_type=:source_type, "
+            "source_title=:source_title, source_detail=:source_detail, notes=:notes, "
+            "rating=:rating WHERE id=:id", v)
+        drop = [int(x) for x in request.form.getlist("delete_photo") if x.isdigit()]
+        if drop:
+            marks = ",".join("?" * len(drop))
+            names = [r["filename"] for r in db().execute(
+                f"SELECT filename FROM photos WHERE meal_id=? AND id IN ({marks})",
+                [meal_id, *drop])]
+            db().execute(f"DELETE FROM photos WHERE meal_id=? AND id IN ({marks})", [meal_id, *drop])
+            remove_photo_files(names)
+        save_photos(meal_id, request.files.getlist("photos"))
+        db().commit()
+        return redirect(url_for("meal_detail", meal_id=meal_id))
+    return render_template("form.html", meal=meal, photos=photos, types=SOURCE_TYPES,
+                           books=titles_for("cookbook"), places=titles_for("restaurant"),
+                           editing=True)
+
+
+@app.route("/meal/<int:meal_id>/delete", methods=["POST"])
+def delete_meal(meal_id):
+    get_meal(meal_id)
+    names = [r["filename"] for r in db().execute(
+        "SELECT filename FROM photos WHERE meal_id=?", (meal_id,))]
+    db().execute("DELETE FROM meals WHERE id=?", (meal_id,))
+    db().commit()
+    remove_photo_files(names)
+    return redirect(url_for("index"))
+
+
+@app.route("/photos/<path:filename>")
+def photo(filename):
+    resp = send_from_directory(PHOTO_DIR, filename)
+    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return resp
+
+
+@app.route("/sw.js")
+def service_worker():
+    resp = send_from_directory(app.static_folder, "sw.js")
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8000)), debug=False)

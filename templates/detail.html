@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}{{ meal.name }}{% endblock %}
+{% block topright %}<a class="edit" href="{{ url_for('edit_meal', meal_id=meal.id) }}">Edit</a>{% endblock %}
+{% block content %}
+<article class="detail">
+  <div class="day">{{ meal.day | pretty_day }}, {{ meal.day[:4] }}</div>
+  <h1>{{ meal.name }}</h1>
+
+  <div class="src">
+    <span class="chip {{ meal.source_type }}">{{ types[meal.source_type] }}</span>
+    {% if meal.source_title %}<b>{{ meal.source_title }}</b>{% endif %}
+    {% if meal.source_detail %}
+      {% if meal.source_detail.startswith('http') %}
+        · <a href="{{ meal.source_detail }}" target="_blank" rel="noopener noreferrer">open recipe ↗</a>
+      {% else %}
+        · {{ meal.source_detail }}
+      {% endif %}
+    {% endif %}
+  </div>
+
+  {% if meal.rating %}<div class="score big">★ {{ meal.rating }}<small>/10</small></div>{% endif %}
+
+  {% if meal.notes %}<p class="notes">{{ meal.notes }}</p>{% endif %}
+
+  {% if photos %}
+  <div class="gallery">
+    {% for p in photos %}
+      <a href="{{ url_for('photo', filename=p.filename) }}" target="_blank">
+        <img src="{{ url_for('photo', filename=p.filename) }}" alt="Photo of {{ meal.name }}" loading="lazy">
+      </a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('delete_meal', meal_id=meal.id) }}"
+        onsubmit="return confirm('Delete this dinner and its photos?');">
+    <button class="btn danger" type="submit">Delete</button>
+  </form>
+</article>
+{% endblock %}

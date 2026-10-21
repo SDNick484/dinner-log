@@ -1,0 +1,141 @@
+{% extends "base.html" %}
+{% block title %}{{ 'Edit' if editing else 'New' }} dinner{% endblock %}
+{% block content %}
+<form method="post" enctype="multipart/form-data" class="form">
+  <h1>{{ 'Edit dinner' if editing else 'Log a dinner' }}</h1>
+
+  <label>Day
+    <input type="date" name="day" value="{{ meal['day'] }}" required>
+  </label>
+
+  <label>What did we have?
+    <input type="text" name="name" value="{{ meal['name'] }}" placeholder="e.g. Chicken tikka masala" required autofocus>
+  </label>
+
+  <fieldset>
+    <legend>Where did it come from?</legend>
+    <div class="seg">
+      {% for key, label in types.items() %}
+        <label class="seg-opt">
+          <input type="radio" name="source_type" value="{{ key }}" {{ 'checked' if meal['source_type'] == key }}>
+          <span>{{ label }}</span>
+        </label>
+      {% endfor %}
+    </div>
+
+    <label data-show="cookbook online restaurant">
+      <span id="title-label">Cookbook</span>
+      <input type="text" name="source_title" value="{{ meal['source_title'] }}" list="books" autocomplete="off">
+    </label>
+    <datalist id="books">{% for b in books %}<option value="{{ b }}">{% endfor %}</datalist>
+    <datalist id="places">{% for p in places %}<option value="{{ p }}">{% endfor %}</datalist>
+
+    <label data-show="cookbook online restaurant">
+      <span id="detail-label">Page</span>
+      <input type="text" name="source_detail" value="{{ meal['source_detail'] }}">
+    </label>
+  </fieldset>
+
+  <fieldset>
+    <legend>Rating <small id="rating-out"></small></legend>
+    <div class="rating" id="rating">
+      {% for n in range(1, 11) %}
+        <label class="rate">
+          <input type="radio" name="rating" value="{{ n }}" {{ 'checked' if meal['rating'] == n }}>
+          <span>{{ n }}</span>
+        </label>
+      {% endfor %}
+    </div>
+    <button type="button" class="linkbtn" id="rating-clear" hidden>Clear rating</button>
+  </fieldset>
+
+  <label>Notes
+    <textarea name="notes" rows="3" placeholder="Tweaks, who liked it, would we make it again…">{{ meal['notes'] }}</textarea>
+  </label>
+
+  {% if photos %}
+  <div class="existing">
+    <div class="legend">Photos <small>(check to remove)</small></div>
+    <div class="thumbs">
+      {% for p in photos %}
+        <label class="thumb">
+          <img src="{{ url_for('photo', filename=p.filename) }}" alt="">
+          <input type="checkbox" name="delete_photo" value="{{ p.id }}"><span>Remove</span>
+        </label>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <label>Add photos
+    <input type="file" name="photos" accept="image/*" multiple id="photos">
+  </label>
+  <div class="thumbs" id="preview"></div>
+
+  <div class="actions">
+    <button class="btn primary" type="submit">Save</button>
+    <a class="btn" href="{{ url_for('meal_detail', meal_id=meal['id']) if editing else url_for('index') }}">Cancel</a>
+  </div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  const form = document.querySelector('.form');
+  const titleLabel = document.getElementById('title-label');
+  const detailLabel = document.getElementById('detail-label');
+  const titleInput = form.querySelector('[name=source_title]');
+  const detailInput = form.querySelector('[name=source_detail]');
+
+  const SOURCES = {
+    cookbook:   {title: 'Cookbook',   detail: 'Page',     tph: 'e.g. Salt Fat Acid Heat', dph: 'p. 142',               list: 'books'},
+    online:     {title: 'Site',       detail: 'Link',     tph: 'e.g. NYT Cooking',       dph: 'https://…',            list: null},
+    restaurant: {title: 'Restaurant', detail: 'Location', tph: 'e.g. Luigi’s',    dph: 'City or neighborhood', list: 'places'},
+  };
+
+  function syncSource() {
+    const t = form.querySelector('input[name=source_type]:checked').value;
+    form.querySelectorAll('[data-show]').forEach(el => {
+      el.hidden = !el.dataset.show.split(' ').includes(t);
+    });
+    const s = SOURCES[t];
+    if (!s) return;
+    titleLabel.textContent = s.title;   detailLabel.textContent = s.detail;
+    titleInput.placeholder = s.tph;     detailInput.placeholder = s.dph;
+    if (s.list) titleInput.setAttribute('list', s.list); else titleInput.removeAttribute('list');
+  }
+  form.querySelectorAll('input[name=source_type]').forEach(r => r.addEventListener('change', syncSource));
+  syncSource();
+
+  // Rating: tap a number to set it, tap it again (or "Clear") to unset.
+  const rateOut = document.getElementById('rating-out');
+  const clearBtn = document.getElementById('rating-clear');
+  const rates = [...form.querySelectorAll('input[name=rating]')];
+  let lastChecked = rates.find(r => r.checked) || null;
+  function syncRating() {
+    const cur = rates.find(r => r.checked);
+    rateOut.textContent = cur ? '— ' + cur.value + '/10' : '(optional)';
+    clearBtn.hidden = !cur;
+  }
+  rates.forEach(r => r.addEventListener('click', () => {
+    if (lastChecked === r) { r.checked = false; lastChecked = null; }
+    else lastChecked = r;
+    syncRating();
+  }));
+  clearBtn.addEventListener('click', () => {
+    rates.forEach(r => r.checked = false); lastChecked = null; syncRating();
+  });
+  syncRating();
+
+  document.getElementById('photos').addEventListener('change', e => {
+    const box = document.getElementById('preview');
+    box.innerHTML = '';
+    for (const f of e.target.files) {
+      const img = document.createElement('img');
+      img.src = URL.createObjectURL(f);
+      img.className = 'thumb-img';
+      box.appendChild(img);
+    }
+  });
+</script>
+{% endblock %}

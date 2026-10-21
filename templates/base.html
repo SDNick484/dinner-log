@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#b4532a">
+  <link rel="manifest" href="{{ url_for('static', filename='manifest.json') }}" crossorigin="use-credentials">
+  <link rel="icon" href="{{ url_for('static', filename='icon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <title>{% block title %}Dinner Log{% endblock %}</title>
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="{{ url_for('index') }}">🍽️ Dinner Log</a>
+    {% block topright %}{% endblock %}
+  </header>
+  <main>{% block content %}{% endblock %}</main>
+  <script>
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js');
+  </script>
+  {% block scripts %}{% endblock %}
+</body>
+</html>
