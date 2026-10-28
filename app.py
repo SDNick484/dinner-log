@@ -117,11 +117,13 @@ def parse_meal_params(params, default_source="cookbook"):
     }
 
 
+
 def form_values():
     v = parse_meal_params(request.form, default_source="original")
     if not v["name"]:
         v["name"] = "Untitled dinner"
     return v
+
 
 
 def titles_for(source_type):
@@ -173,21 +175,91 @@ def gap_label(iso, today=None):
     return d.strftime("%a %b ") + str(d.day)
 
 
+def suggest_dinner(today=None):
+    if today is None:
+        today = datetime.date.today()
+    cutoff_21 = (today - datetime.timedelta(days=21)).isoformat()
+    cutoff_2 = (today - datetime.timedelta(days=2)).isoformat()
+
+    def query_candidate(cutoff_date, rating_min=None):
+        sql = (
+            "SELECT m.* FROM meals m "
+            "JOIN ("
+            "  SELECT LOWER(TRIM(name)) AS norm_name, MAX(day) AS last_day "
+            "  FROM meals "
+            "  GROUP BY LOWER(TRIM(name)) "
+            "  HAVING last_day <= ?"
+            ") latest ON LOWER(TRIM(m.name)) = latest.norm_name AND m.day = latest.last_day "
+        )
+        params = [cutoff_date]
+        if rating_min is not None:
+            sql += " WHERE m.rating >= ?"
+            params.append(rating_min)
+        sql += " GROUP BY LOWER(TRIM(m.name)) ORDER BY RANDOM() LIMIT 1"
+        return db().execute(sql, params).fetchone()
+
+    # Priority 1: Rating >= 8, not made in last 21 days
+    row = query_candidate(cutoff_21, rating_min=8)
+
+    # Priority 2: Any meal not made in last 21 days
+    if row is None:
+        row = query_candidate(cutoff_21)
+
+    # Priority 3: Any meal not made in last 2 days
+    if row is None:
+        row = query_candidate(cutoff_2)
+
+    if row is None:
+        return None
+
+    meal_dict = dict(row)
+    try:
+        d = datetime.date.fromisoformat(meal_dict["day"])
+        meal_dict["days_ago"] = (today - d).days
+    except (ValueError, TypeError):
+        meal_dict["days_ago"] = None
+    return meal_dict
+
+
 @app.route("/")
 def index():
     q = request.args.get("q", "").strip()
+    source = request.args.get("source", "").strip()
+    fav = request.args.get("fav", "").strip()
+    suggest = request.args.get("suggest", "").strip()
+
+    cur_source = source if source in SOURCE_TYPES else ""
+    cur_fav = "1" if fav == "1" else ""
+
     sql = ("SELECT m.*, (SELECT filename FROM photos p WHERE p.meal_id = m.id "
-           "ORDER BY p.id LIMIT 1) AS thumb FROM meals m")
+           "ORDER BY p.id LIMIT 1) AS thumb FROM meals m WHERE 1=1")
     args = []
     if q:
-        sql += (" WHERE m.name LIKE ? OR m.source_title LIKE ? "
-                "OR m.source_detail LIKE ? OR m.notes LIKE ?")
-        args = [f"%{q}%"] * 4
+        sql += (" AND (m.name LIKE ? OR m.source_title LIKE ? "
+                "OR m.source_detail LIKE ? OR m.notes LIKE ?)")
+        args.extend([f"%{q}%"] * 4)
+    if cur_source:
+        sql += " AND m.source_type = ?"
+        args.append(cur_source)
+    if cur_fav == "1":
+        sql += " AND m.rating >= 8"
+
     sql += " ORDER BY m.day DESC, m.id DESC LIMIT 500"
     meals = db().execute(sql, args).fetchall()
     missing_days = recent_missing_days() if not q else []
-    return render_template("index.html", meals=meals, q=q, types=SOURCE_TYPES,
-                           missing_days=missing_days)
+    suggestion = suggest_dinner() if suggest == "1" else None
+
+    return render_template(
+        "index.html",
+        meals=meals,
+        q=q,
+        types=SOURCE_TYPES,
+        missing_days=missing_days,
+        cur_source=cur_source,
+        cur_fav=cur_fav,
+        suggestion=suggestion
+    )
+
 
 
 @app.route("/new", methods=["GET", "POST"])
