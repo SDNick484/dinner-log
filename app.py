@@ -66,18 +66,30 @@ TRUSTED_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("TRUSTED_ORIGIN
 @app.before_request
 def refuse_cross_site_writes():
     """CSRF defense in depth: the app has no session of its own, but an
-    authenticating proxy's cookie may ride along on a cross-site form post.
-    Browsers label such requests; refuse them. Requests without the headers
-    (curl, scripts, very old browsers) pass, since they can't carry a victim's cookie
-    from another site anyway."""
+    authenticating proxy's cookie may ride along on a form post from another
+    site. Browsers label such requests; refuse them.
+
+    Fetch Metadata (Sec-Fetch-Site) is the primary signal because it doesn't
+    depend on the Host header, which many reverse proxies rewrite (nginx's
+    default sends the upstream address). Only when a browser doesn't send it
+    do we compare Origin with the Host / X-Forwarded-Host. Requests with
+    neither header (curl, scripts) pass: they can't carry a victim's cookie.
+    TRUSTED_ORIGINS lets a named sibling site post anyway."""
     if request.method in ("GET", "HEAD", "OPTIONS"):
         return None
-    if request.headers.get("Sec-Fetch-Site") == "cross-site":
-        abort(403)
-    origin = request.headers.get("Origin")
-    if origin and (urllib.parse.urlsplit(origin).netloc != request.host
-                   and origin.rstrip("/") not in TRUSTED_ORIGINS):
-        abort(403)  # includes "null", which a sandboxed attacker frame sends
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin and origin in TRUSTED_ORIGINS:
+        return None
+    site = request.headers.get("Sec-Fetch-Site")
+    if site:
+        if site not in ("same-origin", "none"):
+            abort(403)  # cross-site, or same-site from a sibling subdomain
+        return None
+    if origin:
+        netloc = urllib.parse.urlsplit(origin).netloc
+        hosts = {request.host, request.headers.get("X-Forwarded-Host", "").split(",")[0].strip()}
+        if not netloc or netloc not in hosts:
+            abort(403)  # includes "null", which a sandboxed attacker frame sends
     return None
 
 

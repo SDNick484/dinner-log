@@ -70,7 +70,7 @@ If you publish it on the internet, make sure the access policy is in place *befo
 
 **Don't leave a side door open.** A proxy only protects the traffic that goes through it. If the app listens on all interfaces, anyone on the same network can skip the proxy and talk to it directly. When the proxy or tunnel runs on the same machine, bind to loopback: `DINNER_BIND=127.0.0.1` with the Alpine installer, or `"127.0.0.1:8000:8000"` under `ports:` in `docker-compose.yml`. When it runs elsewhere, firewall the port so only the proxy can reach it.
 
-**Cross-site requests.** Because login lives in the proxy's cookie, the app refuses POSTs that browsers mark as coming from another site (`Sec-Fetch-Site: cross-site`, or an `Origin` that doesn't match the request's `Host`). This assumes the proxy passes the original `Host` header through, which is the default for common tunnels and reverse proxies. If yours rewrites it and saves start failing with 403, list your public origin in `TRUSTED_ORIGINS` (e.g. `https://dinners.example.com`).
+**Cross-site requests.** Because login lives in the proxy's cookie, the app refuses POSTs that browsers mark as coming from another site, including sibling subdomains (`Sec-Fetch-Site: cross-site` or `same-site`). This check doesn't depend on the `Host` header, so it works behind proxies that rewrite it (nginx does by default). For browsers that don't send that header, it falls back to comparing `Origin` with `Host` / `X-Forwarded-Host`. To let a specific sibling site post, list its origin in `TRUSTED_ORIGINS` (e.g. `https://other.example.com`).
 
 ## Installing on a phone
 
