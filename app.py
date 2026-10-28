@@ -3,8 +3,13 @@
 Flask + SQLite, photos stored on disk. No auth: run it behind your LAN/VPN.
 """
 import datetime
+import json
 import os
 import sqlite3
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 
 from flask import (Flask, abort, g, redirect, render_template, request,
@@ -126,13 +131,72 @@ def form_values():
 
 
 
+COOKBOOK_URL = os.environ.get("COOKBOOK_URL", "").strip().rstrip("/")
+_cookbook_cache = {"cached_at": 0, "titles": []}
+
+
+def cookbook_search_url(query):
+    q = str(query or "").strip()
+    if not COOKBOOK_URL or not q:
+        return ""
+    return f"{COOKBOOK_URL}/#/?q={urllib.parse.quote_plus(q)}"
+
+
+@app.template_filter("cookbook_search_url")
+def filter_cookbook_search_url(query):
+    return cookbook_search_url(query)
+
+
+@app.context_processor
+def inject_cookbook_config():
+    return {
+        "cookbook_url": COOKBOOK_URL,
+        "cookbook_search_url": cookbook_search_url,
+    }
+
+
+def fetch_cookbook_titles(timeout=1.5):
+    if not COOKBOOK_URL:
+        return []
+    now = time.time()
+    if now - _cookbook_cache["cached_at"] < 60:
+        return _cookbook_cache["titles"]
+
+    req_url = f"{COOKBOOK_URL}/api/books"
+    try:
+        with urllib.request.urlopen(req_url, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            books = data.get("books", [])
+            titles = [b["title"].strip() for b in books if b.get("title")]
+            _cookbook_cache["titles"] = titles
+            _cookbook_cache["cached_at"] = now
+            return titles
+    except Exception as exc:
+        app.logger.warning("Failed to fetch books from Cookbook Collection (%s): %s", req_url, exc)
+        _cookbook_cache["cached_at"] = now - 45
+        return _cookbook_cache["titles"]
+
+
 def titles_for(source_type):
     """Past cookbook / restaurant names, for autocomplete."""
     rows = db().execute(
         "SELECT DISTINCT source_title FROM meals "
         "WHERE source_type=? AND source_title != '' ORDER BY source_title COLLATE NOCASE",
         (source_type,))
-    return [r["source_title"] for r in rows]
+    local_titles = [r["source_title"] for r in rows]
+    if source_type != "cookbook":
+        return local_titles
+
+    remote_titles = fetch_cookbook_titles()
+    seen = set()
+    merged = []
+    for t in local_titles + remote_titles:
+        key = t.strip().lower()
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(t.strip())
+    merged.sort(key=lambda s: s.lower())
+    return merged
 
 
 @app.template_filter("pretty_day")

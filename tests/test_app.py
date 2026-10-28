@@ -397,3 +397,121 @@ def test_filter_chips_and_suggestion_card_rendering(client):
     assert 'source_title=Mexican+Everyday' in html or 'source_title=Mexican%20Everyday' in html
     assert 'source_detail=p.+42' in html or 'source_detail=p.%2042' in html
     assert 'class="suggest-dismiss"' in html
+
+
+def test_cookbook_search_url_helper(tmp_path, monkeypatch):
+    monkeypatch.setenv("COOKBOOK_URL", "https://cookbooks.example.com")
+    app_module = load_app(tmp_path)
+    with app_module.app.app_context():
+        assert app_module.cookbook_search_url("Thai Food") == "https://cookbooks.example.com/#/?q=Thai+Food"
+        assert app_module.cookbook_search_url("Salt & Pepper") == "https://cookbooks.example.com/#/?q=Salt+%26+Pepper"
+        assert app_module.cookbook_search_url("   ") == ""
+        assert app_module.cookbook_search_url(None) == ""
+
+    # When unset
+    monkeypatch.delenv("COOKBOOK_URL", raising=False)
+    app_module_unset = load_app(tmp_path)
+    with app_module_unset.app.app_context():
+        assert app_module_unset.cookbook_search_url("Thai Food") == ""
+
+
+def test_titles_for_cookbook_merges_remote_and_handles_failures(tmp_path, monkeypatch):
+    monkeypatch.setenv("COOKBOOK_URL", "http://fake-cookbooks.local")
+    app_module = load_app(tmp_path)
+
+    # Insert local meals
+    with app_module.app.app_context():
+        app_module.db().execute(
+            "INSERT INTO meals (day, name, source_type, source_title) "
+            "VALUES ('2026-10-01', 'Pasta', 'cookbook', 'Italian Bible')"
+        )
+        app_module.db().commit()
+
+        # Mock urllib.request.urlopen returning books JSON
+        class FakeResponse:
+            def read(self):
+                return b'{"books": [{"title": "Thai Food"}, {"title": "italian bible"}, {"title": "Zuni Cafe"}]}'
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+
+        calls = []
+        def fake_urlopen(url, timeout=None):
+            calls.append(url)
+            return FakeResponse()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+        titles = app_module.titles_for("cookbook")
+        # Merged, case-insensitively deduplicated, sorted
+        assert titles == ["Italian Bible", "Thai Food", "Zuni Cafe"]
+        assert len(calls) == 1
+
+        # Cache test: second call within TTL should NOT call urlopen again
+        titles2 = app_module.titles_for("cookbook")
+        assert titles2 == titles
+        assert len(calls) == 1
+
+        # Error fallback test: when urlopen raises URLError or timeout
+        import urllib.error
+        fail_calls = []
+        def failing_urlopen(url, timeout=None):
+            fail_calls.append(url)
+            raise urllib.error.URLError("Connection refused")
+
+        monkeypatch.setattr("urllib.request.urlopen", failing_urlopen)
+        app_module._cookbook_cache["cached_at"] = 0  # expire cache
+        # During outage, serves stale cache if available
+        stale_titles = app_module.titles_for("cookbook")
+        assert stale_titles == ["Italian Bible", "Thai Food", "Zuni Cafe"]
+        assert len(fail_calls) == 1
+
+        # Backoff: immediate next call does NOT call urlopen again
+        app_module.titles_for("cookbook")
+        assert len(fail_calls) == 1
+
+        # When cache is completely empty and fetch fails, falls back to local DB titles
+        app_module._cookbook_cache["titles"] = []
+        app_module._cookbook_cache["cached_at"] = 0
+        fallback_titles = app_module.titles_for("cookbook")
+        assert fallback_titles == ["Italian Bible"]
+
+
+def test_cookbook_links_rendered_when_configured(client, monkeypatch):
+    monkeypatch.setattr("app.COOKBOOK_URL", "https://cookbooks.example.com")
+    monkeypatch.setattr("app.fetch_cookbook_titles", lambda: ["Thai Food"])
+
+    # Create a meal from a cookbook
+    client.post("/new", data={
+        "name": "Panang Curry",
+        "source_type": "cookbook",
+        "source_title": "Thai Food",
+        "source_detail": "p. 110",
+        "day": "2026-09-01"
+    })
+
+    # Detail page: check outbound links
+    detail_html = text(client.get("/meal/1"))
+    assert 'href="https://cookbooks.example.com/#/?q=Thai+Food"' in detail_html
+    assert 'href="https://cookbooks.example.com/#/?q=Panang+Curry"' in detail_html
+    assert 'Search recipe in Cookbook Collection ↗' in detail_html
+
+    # Form: check Browse catalog link
+    form_html = text(client.get("/new"))
+    assert 'href="https://cookbooks.example.com/#/"' in form_html
+    assert 'Browse catalog ↗' in form_html
+
+    # Home feed suggestion card: check View in Cookbook Collection
+    suggest_html = text(client.get("/?suggest=1"))
+    assert 'href="https://cookbooks.example.com/#/?q=Thai+Food"' in suggest_html
+    assert 'View in Cookbook Collection ↗' in suggest_html
+
+    # When COOKBOOK_URL is unset/empty
+    monkeypatch.setattr("app.COOKBOOK_URL", "")
+    detail_unset = text(client.get("/meal/1"))
+    assert 'https://cookbooks.example.com' not in detail_unset
+    assert 'Search recipe in Cookbook Collection' not in detail_unset
+
+    form_unset = text(client.get("/new"))
+    assert 'Browse catalog ↗' not in form_unset
