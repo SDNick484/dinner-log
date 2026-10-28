@@ -144,6 +144,35 @@ def month_label(iso):
     return datetime.date.fromisoformat(iso).strftime("%B %Y")
 
 
+def recent_missing_days(days=7, today=None):
+    if days <= 0:
+        return []
+    if today is None:
+        today = datetime.date.today()
+    window = [(today - datetime.timedelta(days=i)).isoformat() for i in range(days)]
+
+    start_day = window[-1]
+    end_day = window[0]
+    rows = db().execute(
+        "SELECT DISTINCT day FROM meals WHERE day >= ? AND day <= ?",
+        (start_day, end_day)
+    ).fetchall()
+    logged = {r["day"] for r in rows}
+    return [d for d in window if d not in logged]
+
+
+@app.template_filter("gap_label")
+def gap_label(iso, today=None):
+    if today is None:
+        today = datetime.date.today()
+    d = datetime.date.fromisoformat(iso)
+    if d == today:
+        return "Today"
+    if d == today - datetime.timedelta(days=1):
+        return "Yesterday"
+    return d.strftime("%a %b ") + str(d.day)
+
+
 @app.route("/")
 def index():
     q = request.args.get("q", "").strip()
@@ -156,7 +185,9 @@ def index():
         args = [f"%{q}%"] * 4
     sql += " ORDER BY m.day DESC, m.id DESC LIMIT 500"
     meals = db().execute(sql, args).fetchall()
-    return render_template("index.html", meals=meals, q=q, types=SOURCE_TYPES)
+    missing_days = recent_missing_days() if not q else []
+    return render_template("index.html", meals=meals, q=q, types=SOURCE_TYPES,
+                           missing_days=missing_days)
 
 
 @app.route("/new", methods=["GET", "POST"])

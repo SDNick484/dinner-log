@@ -4,6 +4,18 @@
   <input type="search" name="q" value="{{ q }}" placeholder="Search meals, cookbooks, notes…">
 </form>
 
+{% if missing_days and not q %}
+<div class="gaps">
+  <span class="gaps-label">Catch up:</span>
+  <div class="gaps-list">
+    {% for d in missing_days %}
+      {% set label = d | gap_label %}
+      <a class="gap-pill" href="{{ url_for('new_meal', day=d) }}" aria-label="Log dinner for {{ label }}">{{ label }} <span aria-hidden="true">+</span></a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
 {% if not meals %}
   <p class="empty">
     {% if q %}No dinners match “{{ q }}”.{% else %}Nothing logged yet. Tap <b>+</b> to add tonight's dinner.{% endif %}
