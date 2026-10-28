@@ -3,6 +3,10 @@
 {% block topright %}<a class="edit" href="{{ url_for('edit_meal', meal_id=meal.id) }}">Edit</a>{% endblock %}
 {% block content %}
 <article class="detail">
+  {% if skipped %}
+  <p class="notice" role="status">{{ skipped }} photo{{ 's' if skipped != 1 }} couldn’t be read and {{ 'were' if skipped != 1 else 'was' }} skipped.
+    HEIC and very large images aren’t supported; set the camera to JPEG or share a smaller copy.</p>
+  {% endif %}
   <div class="day">{{ meal.day | pretty_day }}, {{ meal.day[:4] }}</div>
   <h1>{{ meal.name }}</h1>
 

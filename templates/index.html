@@ -97,5 +97,7 @@
 {% endfor %}
 </ul>
 
+{% if older %}<a class="older" href="{{ older }}">Older dinners ↓</a>{% endif %}
+
 <a class="fab" href="{{ url_for('new_meal') }}" aria-label="Add dinner">+</a>
 {% endblock %}

@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (Flask, abort, g, redirect, render_template, request,
                    send_from_directory, url_for)
@@ -23,7 +24,27 @@ os.makedirs(PHOTO_DIR, exist_ok=True)
 
 SOURCE_TYPES = {"cookbook": "Cookbook", "online": "Online",
                 "restaurant": "Restaurant", "original": "Our own"}
+def _load_tz(name):
+    """IANA zone from APP_TZ (e.g. America/Chicago). Empty or unknown -> UTC,
+    with a warning, rather than refusing to start."""
+    name = (name or "").strip() or "UTC"
+    try:
+        return ZoneInfo(name)
+    except (ValueError, ZoneInfoNotFoundError):
+        import logging
+        logging.getLogger(__name__).warning("Unknown APP_TZ %r; using UTC", name)
+        return ZoneInfo("UTC")
+
+
+APP_TZ = _load_tz(os.environ.get("APP_TZ"))
 MAX_PHOTO_EDGE = 1600  # phone photos are huge; downscale to keep storage sane
+MAX_DECODE_PIXELS = 40_000_000  # after JPEG draft scaling; ~120 MB as RGB
+
+def local_today(now=None):
+    """Today's date in the household's time zone, not the server's (usually UTC)."""
+    now = now or datetime.datetime.now(APP_TZ)
+    return now.astimezone(APP_TZ).date()
+
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
@@ -48,6 +69,40 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE INDEX IF NOT EXISTS idx_meals_day ON meals(day DESC);
 CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id);
 """
+
+
+TRUSTED_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("TRUSTED_ORIGINS", "").split(",")
+                   if o.strip()}
+
+
+@app.before_request
+def refuse_cross_site_writes():
+    """CSRF defense in depth: the app has no session of its own, but an
+    authenticating proxy's cookie may ride along on a form post from another
+    site. Browsers label such requests; refuse them.
+
+    Fetch Metadata (Sec-Fetch-Site) is the primary signal because it doesn't
+    depend on the Host header, which many reverse proxies rewrite (nginx's
+    default sends the upstream address). Only when a browser doesn't send it
+    do we compare Origin with the Host / X-Forwarded-Host. Requests with
+    neither header (curl, scripts) pass: they can't carry a victim's cookie.
+    TRUSTED_ORIGINS lets a named sibling site post anyway."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    origin = (request.headers.get("Origin") or "").rstrip("/")
+    if origin and origin in TRUSTED_ORIGINS:
+        return None
+    site = request.headers.get("Sec-Fetch-Site")
+    if site:
+        if site not in ("same-origin", "none"):
+            abort(403)  # cross-site, or same-site from a sibling subdomain
+        return None
+    if origin:
+        netloc = urllib.parse.urlsplit(origin).netloc
+        hosts = {request.host, request.headers.get("X-Forwarded-Host", "").split(",")[0].strip()}
+        if not netloc or netloc not in hosts:
+            abort(403)  # includes "null", which a sandboxed attacker frame sends
+    return None
 
 
 def db():
@@ -75,18 +130,33 @@ with sqlite3.connect(DB_PATH) as _c:
 
 
 def save_photos(meal_id, files):
+    """Downscale and store uploads. Returns how many files were skipped.
+
+    Pixels are checked from the header before anything is decoded, and JPEGs
+    are decoded at reduced scale (draft), so a huge or hostile image can't
+    exhaust a small container's memory. EXIF (including GPS) is not carried
+    over to the saved JPEG; orientation is applied to the pixels first.
+    """
+    skipped = 0
     for f in files:
         if not f or not f.filename:
             continue
         try:
             img = Image.open(f.stream)
+            if img.format == "JPEG":
+                img.draft("RGB", (MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
+            if img.width * img.height > MAX_DECODE_PIXELS:
+                raise ValueError("image too large to decode safely")
             img = ImageOps.exif_transpose(img).convert("RGB")
-        except Exception:
-            continue  # not a readable image; skip it
+        except Exception as exc:
+            app.logger.info("Skipped photo %r: %s", f.filename, exc)
+            skipped += 1
+            continue
         img.thumbnail((MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
         name = uuid.uuid4().hex + ".jpg"
         img.save(os.path.join(PHOTO_DIR, name), "JPEG", quality=85, optimize=True)
         db().execute("INSERT INTO photos (meal_id, filename) VALUES (?, ?)", (meal_id, name))
+    return skipped
 
 
 def remove_photo_files(names):
@@ -104,11 +174,11 @@ def parse_meal_params(params, default_source="cookbook"):
             stype = "original"
     else:
         stype = default_source
-    day = str(params.get("day") or "").strip() or datetime.date.today().isoformat()
+    day = str(params.get("day") or "").strip() or local_today().isoformat()
     try:
-        datetime.date.fromisoformat(day)
+        day = datetime.date.fromisoformat(day).isoformat()  # normalize e.g. 20261028
     except ValueError:
-        day = datetime.date.today().isoformat()
+        day = local_today().isoformat()
     raw = str(params.get("rating") or "").strip()
     rating = int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None
     return {
@@ -214,7 +284,7 @@ def recent_missing_days(days=7, today=None):
     if days <= 0:
         return []
     if today is None:
-        today = datetime.date.today()
+        today = local_today()
     window = [(today - datetime.timedelta(days=i)).isoformat() for i in range(days)]
 
     start_day = window[-1]
@@ -230,7 +300,7 @@ def recent_missing_days(days=7, today=None):
 @app.template_filter("gap_label")
 def gap_label(iso, today=None):
     if today is None:
-        today = datetime.date.today()
+        today = local_today()
     d = datetime.date.fromisoformat(iso)
     if d == today:
         return "Today"
@@ -239,50 +309,77 @@ def gap_label(iso, today=None):
     return d.strftime("%a %b ") + str(d.day)
 
 
-def suggest_dinner(today=None):
+FAVORITE_MIN = 8
+
+
+def suggest_dinner(today=None, source="", fav=False):
+    """Pick a past dinner worth repeating.
+
+    A dish is grouped by its normalized name. Its rating is the best it has ever
+    been rated (an unrated repeat doesn't demote a favorite); its recency is the
+    last time it was made. `source` / `fav` mirror the feed's filter chips.
+    """
     if today is None:
-        today = datetime.date.today()
+        today = local_today()
     cutoff_21 = (today - datetime.timedelta(days=21)).isoformat()
     cutoff_2 = (today - datetime.timedelta(days=2)).isoformat()
 
+    # Recency and best rating span every time the dish was made, whatever its
+    # source; the source filter only decides which dishes are eligible and
+    # which logged row (title, page...) the card shows.
+    src_cond, src_args = ("source_type = ?", [source]) if source in SOURCE_TYPES else ("1", [])
+
     def query_candidate(cutoff_date, rating_min=None):
         sql = (
-            "SELECT m.* FROM meals m "
-            "JOIN ("
-            "  SELECT LOWER(TRIM(name)) AS norm_name, MAX(day) AS last_day "
-            "  FROM meals "
-            "  GROUP BY LOWER(TRIM(name)) "
-            "  HAVING last_day <= ?"
-            ") latest ON LOWER(TRIM(m.name)) = latest.norm_name AND m.day = latest.last_day "
+            "SELECT m.*, d.last_day, d.best_rating FROM ("
+            "  SELECT LOWER(TRIM(name)) AS norm_name, MAX(day) AS last_day, "
+            "         MAX(rating) AS best_rating, "
+            f"        MAX(CASE WHEN {src_cond} THEN day END) AS show_day "
+            "  FROM meals GROUP BY LOWER(TRIM(name)) "
+            "  HAVING last_day <= ? AND show_day IS NOT NULL"
+            + (" AND best_rating >= ?" if rating_min is not None else "") +
+            ") d JOIN meals m ON LOWER(TRIM(m.name)) = d.norm_name AND m.day = d.show_day "
+            f"AND {src_cond.replace('source_type', 'm.source_type')} "
+            "GROUP BY d.norm_name ORDER BY RANDOM() LIMIT 1"
         )
-        params = [cutoff_date]
+        params = [*src_args, cutoff_date]
         if rating_min is not None:
-            sql += " WHERE m.rating >= ?"
             params.append(rating_min)
-        sql += " GROUP BY LOWER(TRIM(m.name)) ORDER BY RANDOM() LIMIT 1"
+        params.extend(src_args)
         return db().execute(sql, params).fetchone()
 
-    # Priority 1: Rating >= 8, not made in last 21 days
-    row = query_candidate(cutoff_21, rating_min=8)
-
-    # Priority 2: Any meal not made in last 21 days
+    floor = FAVORITE_MIN if fav else None
+    # Priority 1: a favorite not made in the last 21 days
+    row = query_candidate(cutoff_21, rating_min=FAVORITE_MIN)
+    # Priority 2: anything (within the filters) not made in the last 21 days
     if row is None:
-        row = query_candidate(cutoff_21)
-
-    # Priority 3: Any meal not made in last 2 days
+        row = query_candidate(cutoff_21, rating_min=floor)
+    # Priority 3: anything (within the filters) not made in the last 2 days
     if row is None:
-        row = query_candidate(cutoff_2)
-
+        row = query_candidate(cutoff_2, rating_min=floor)
     if row is None:
         return None
 
     meal_dict = dict(row)
+    meal_dict["rating"] = meal_dict.pop("best_rating")
     try:
-        d = datetime.date.fromisoformat(meal_dict["day"])
+        d = datetime.date.fromisoformat(meal_dict.pop("last_day"))
         meal_dict["days_ago"] = (today - d).days
     except (ValueError, TypeError):
         meal_dict["days_ago"] = None
     return meal_dict
+
+
+PAGE_SIZE = 100  # dinners per feed page
+
+
+def parse_cursor(raw):
+    """'YYYY-MM-DD.<id>' -> (day, id), or None if malformed."""
+    day, _, mid = str(raw).partition(".")
+    try:
+        return datetime.date.fromisoformat(day).isoformat(), int(mid)
+    except ValueError:
+        return None
 
 
 @app.route("/")
@@ -306,12 +403,26 @@ def index():
         sql += " AND m.source_type = ?"
         args.append(cur_source)
     if cur_fav == "1":
-        sql += " AND m.rating >= 8"
+        sql += " AND m.rating >= ?"
+        args.append(FAVORITE_MIN)
 
-    sql += " ORDER BY m.day DESC, m.id DESC LIMIT 500"
-    meals = db().execute(sql, args).fetchall()
-    missing_days = recent_missing_days() if not q else []
-    suggestion = suggest_dinner() if suggest == "1" else None
+    cursor = parse_cursor(request.args.get("before", ""))
+    if cursor:
+        sql += " AND (m.day < ? OR (m.day = ? AND m.id < ?))"
+        args.extend([cursor[0], cursor[0], cursor[1]])
+
+    # Keyset paging on (day, id): fetch one extra row to know if there's more.
+    sql += " ORDER BY m.day DESC, m.id DESC LIMIT ?"
+    meals = db().execute(sql, [*args, PAGE_SIZE + 1]).fetchall()
+    older = None
+    if len(meals) > PAGE_SIZE:
+        meals = meals[:PAGE_SIZE]
+        last = meals[-1]
+        older = url_for("index", q=q or None, source=cur_source or None,
+                        fav=cur_fav or None, before=f"{last['day']}.{last['id']}")
+    missing_days = recent_missing_days() if not q and not cursor else []
+    suggestion = (suggest_dinner(source=cur_source, fav=cur_fav == "1")
+                  if suggest == "1" else None)
 
     return render_template(
         "index.html",
@@ -321,7 +432,8 @@ def index():
         missing_days=missing_days,
         cur_source=cur_source,
         cur_fav=cur_fav,
-        suggestion=suggestion
+        suggestion=suggestion,
+        older=older,
     )
 
 
@@ -333,9 +445,9 @@ def new_meal():
         cur = db().execute(
             "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating) "
             "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating)", v)
-        save_photos(cur.lastrowid, request.files.getlist("photos"))
+        skipped = save_photos(cur.lastrowid, request.files.getlist("photos"))
         db().commit()
-        return redirect(url_for("meal_detail", meal_id=cur.lastrowid))
+        return redirect(url_for("meal_detail", meal_id=cur.lastrowid, skipped=skipped or None))
     meal = parse_meal_params(request.args)
     return render_template("form.html", meal=meal, photos=[], types=SOURCE_TYPES,
                            books=titles_for("cookbook"), places=titles_for("restaurant"),
@@ -353,7 +465,9 @@ def get_meal(meal_id):
 @app.route("/meal/<int:meal_id>")
 def meal_detail(meal_id):
     meal, photos = get_meal(meal_id)
-    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES)
+    skipped = request.args.get("skipped", "")
+    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES,
+                           skipped=int(skipped) if skipped.isdigit() else 0)
 
 
 @app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])
@@ -367,16 +481,17 @@ def edit_meal(meal_id):
             "source_title=:source_title, source_detail=:source_detail, notes=:notes, "
             "rating=:rating WHERE id=:id", v)
         drop = [int(x) for x in request.form.getlist("delete_photo") if x.isdigit()]
+        names = []
         if drop:
             marks = ",".join("?" * len(drop))
             names = [r["filename"] for r in db().execute(
                 f"SELECT filename FROM photos WHERE meal_id=? AND id IN ({marks})",
                 [meal_id, *drop])]
             db().execute(f"DELETE FROM photos WHERE meal_id=? AND id IN ({marks})", [meal_id, *drop])
-            remove_photo_files(names)
-        save_photos(meal_id, request.files.getlist("photos"))
+        skipped = save_photos(meal_id, request.files.getlist("photos"))
         db().commit()
-        return redirect(url_for("meal_detail", meal_id=meal_id))
+        remove_photo_files(names)  # only once the rows are gone for good
+        return redirect(url_for("meal_detail", meal_id=meal_id, skipped=skipped or None))
     return render_template("form.html", meal=meal, photos=photos, types=SOURCE_TYPES,
                            books=titles_for("cookbook"), places=titles_for("restaurant"),
                            editing=True)

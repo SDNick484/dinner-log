@@ -1,3 +1,4 @@
 flask>=3.0
 pillow>=10.0
 gunicorn>=22.0
+tzdata>=2024.1  # zoneinfo fallback where the OS has no zone database
