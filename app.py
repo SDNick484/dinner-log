@@ -5,8 +5,11 @@ Flask + SQLite, photos stored on disk. No auth: run it behind your LAN/VPN.
 import datetime
 import json
 import os
+import random
+import re
 import sqlite3
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -201,7 +204,11 @@ def form_values():
 
 
 
-COOKBOOK_URL = os.environ.get("COOKBOOK_URL", "").strip().rstrip("/")
+COOKBOOK_URL = os.environ.get("COOKBOOK_URL", "").strip().rstrip("/")  # for links in the browser
+# Where this server calls Cookbook Collection. Point it at the private address (e.g. http://127.0.0.1:8767)
+# when both run on one host: faster, and /admin/api/pick sits behind the login on the public one.
+COOKBOOK_API_URL = (os.environ.get("COOKBOOK_API_URL", "").strip() or COOKBOOK_URL).rstrip("/")
+COOKBOOK_TOKEN = os.environ.get("COOKBOOK_TOKEN", "").strip()  # Cookbook Collection's READ_TOKEN
 _cookbook_cache = {"cached_at": 0, "titles": []}
 
 
@@ -226,13 +233,13 @@ def inject_cookbook_config():
 
 
 def fetch_cookbook_titles(timeout=1.5):
-    if not COOKBOOK_URL:
+    if not COOKBOOK_API_URL:
         return []
     now = time.time()
     if now - _cookbook_cache["cached_at"] < 60:
         return _cookbook_cache["titles"]
 
-    req_url = f"{COOKBOOK_URL}/api/books"
+    req_url = f"{COOKBOOK_API_URL}/api/books"
     try:
         with urllib.request.urlopen(req_url, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
@@ -310,64 +317,206 @@ def gap_label(iso, today=None):
 
 
 FAVORITE_MIN = 8
+REST_DAYS = 21          # a dish made more recently than this isn't suggested (unless nothing else is left)
+PICK_MODES = {"any": "Surprise me", "fav": "Favorite", "new": "Try new"}
+PICK_MAX_TERMS = 5
 
 
-def suggest_dinner(today=None, source="", fav=False):
-    """Pick a past dinner worth repeating.
+def parse_terms(raw):
+    """'chicken, Leeks,,chicken' -> ['chicken', 'Leeks']: the ingredient lists of the picker."""
+    out, seen = [], set()
+    for t in str(raw or "").split(","):
+        t = " ".join(t.split())[:40]
+        if t and t.lower() not in seen:
+            seen.add(t.lower())
+            out.append(t)
+    return out[:PICK_MAX_TERMS]
+
+
+def _stem(w):
+    """Singular, close enough to compare: tomatoes -> tomato, cherries -> cherry, leeks -> leek."""
+    if len(w) > 3 and w.endswith("oes"):
+        return w[:-2]
+    if len(w) > 3 and w.endswith("ies"):
+        return w[:-3] + "y"
+    if len(w) > 2 and w.endswith("s") and not w.endswith("ss"):
+        return w[:-1]
+    return w
+
+
+def _words(text):
+    plain = unicodedata.normalize("NFKD", str(text or "")).encode("ascii", "ignore").decode().lower()
+    return {_stem(w) for w in re.findall(r"[a-z0-9]+", plain)}
+
+
+def mentions(text, term):
+    """Every word of `term` is a whole word of `text`, singular or plural: 'leeks' in 'Leek tart',
+    'pea' not in 'Peach pie'. All Dinner Log knows about ingredients is what dinners are called."""
+    want = _words(term)
+    return bool(want) and want <= _words(text)
+
+
+def _norm(name):
+    return " ".join(str(name or "").lower().split())
+
+
+def local_dishes(today, source="", rest_days=REST_DAYS, rating_min=None):
+    """Every past dish eligible for a suggestion, as dicts ready for the card.
 
     A dish is grouped by its normalized name. Its rating is the best it has ever
     been rated (an unrated repeat doesn't demote a favorite); its recency is the
-    last time it was made. `source` / `fav` mirror the feed's filter chips.
+    last time it was made. Recency and best rating span every time the dish was
+    made, whatever its source; the source filter only decides which dishes are
+    eligible and which logged row (title, page...) the card shows.
     """
-    if today is None:
-        today = local_today()
-    cutoff_21 = (today - datetime.timedelta(days=21)).isoformat()
-    cutoff_2 = (today - datetime.timedelta(days=2)).isoformat()
-
-    # Recency and best rating span every time the dish was made, whatever its
-    # source; the source filter only decides which dishes are eligible and
-    # which logged row (title, page...) the card shows.
+    cutoff = (today - datetime.timedelta(days=rest_days)).isoformat()
     src_cond, src_args = ("source_type = ?", [source]) if source in SOURCE_TYPES else ("1", [])
+    sql = (
+        "SELECT m.*, d.last_day, d.best_rating, d.all_notes FROM ("
+        "  SELECT LOWER(TRIM(name)) AS norm_name, MAX(day) AS last_day, "
+        "         MAX(rating) AS best_rating, GROUP_CONCAT(notes, ' ') AS all_notes, "
+        f"        MAX(CASE WHEN {src_cond} THEN day END) AS show_day "
+        "  FROM meals GROUP BY LOWER(TRIM(name)) "
+        "  HAVING last_day <= ? AND show_day IS NOT NULL"
+        + (" AND best_rating >= ?" if rating_min is not None else "") +
+        ") d JOIN meals m ON LOWER(TRIM(m.name)) = d.norm_name AND m.day = d.show_day "
+        f"AND {src_cond.replace('source_type', 'm.source_type')} "
+        "GROUP BY d.norm_name"
+    )
+    params = [*src_args, cutoff, *([rating_min] if rating_min is not None else []), *src_args]
+    out = []
+    for row in db().execute(sql, params):
+        meal = dict(row)
+        meal["rating"] = meal.pop("best_rating")
+        try:
+            meal["days_ago"] = (today - datetime.date.fromisoformat(meal.pop("last_day"))).days
+        except (ValueError, TypeError):
+            meal["days_ago"] = None
+        out.append(meal)
+    return out
 
-    def query_candidate(cutoff_date, rating_min=None):
-        sql = (
-            "SELECT m.*, d.last_day, d.best_rating FROM ("
-            "  SELECT LOWER(TRIM(name)) AS norm_name, MAX(day) AS last_day, "
-            "         MAX(rating) AS best_rating, "
-            f"        MAX(CASE WHEN {src_cond} THEN day END) AS show_day "
-            "  FROM meals GROUP BY LOWER(TRIM(name)) "
-            "  HAVING last_day <= ? AND show_day IS NOT NULL"
-            + (" AND best_rating >= ?" if rating_min is not None else "") +
-            ") d JOIN meals m ON LOWER(TRIM(m.name)) = d.norm_name AND m.day = d.show_day "
-            f"AND {src_cond.replace('source_type', 'm.source_type')} "
-            "GROUP BY d.norm_name ORDER BY RANDOM() LIMIT 1"
-        )
-        params = [*src_args, cutoff_date]
-        if rating_min is not None:
-            params.append(rating_min)
-        params.extend(src_args)
-        return db().execute(sql, params).fetchone()
 
-    floor = FAVORITE_MIN if fav else None
-    # Priority 1: a favorite not made in the last 21 days
-    row = query_candidate(cutoff_21, rating_min=FAVORITE_MIN)
-    # Priority 2: anything (within the filters) not made in the last 21 days
-    if row is None:
-        row = query_candidate(cutoff_21, rating_min=floor)
-    # Priority 3: anything (within the filters) not made in the last 2 days
-    if row is None:
-        row = query_candidate(cutoff_2, rating_min=floor)
-    if row is None:
+def ingredient_ok(meal, include, exclude):
+    """Dinner Log's own, name-based ingredient filter. Notes count toward including
+    ('added chicken') but not excluding ('no pork this time')."""
+    name, notes = meal.get("name", ""), meal.get("all_notes") or meal.get("notes") or ""
+    return (all(mentions(f"{name} {notes}", t) for t in include)
+            and not any(mentions(name, t) for t in exclude))
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect here means a login page (the address isn't the private one). Don't follow it: urllib
+    would carry the Authorization header to whatever host the redirect names."""
+    def redirect_request(self, *args, **kwargs):
         return None
 
-    meal_dict = dict(row)
-    meal_dict["rating"] = meal_dict.pop("best_rating")
+
+_cookbook_opener = urllib.request.build_opener(_NoRedirect)
+
+
+def fetch_cookbook_picks(mode, include=(), exclude=(), rest_days=REST_DAYS, n=10, timeout=2.0):
+    """Recipes from Cookbook Collection's /admin/api/pick, or None when it isn't set up or doesn't answer
+    (the picker then falls back to past dinners)."""
+    if not COOKBOOK_API_URL:
+        return None
+    qs = urllib.parse.urlencode({"mode": mode, "with": ",".join(include), "without": ",".join(exclude),
+                                 "rest": rest_days, "n": n})
+    url = f"{COOKBOOK_API_URL}/admin/api/pick?{qs}"
+    headers = {"Accept": "application/json"}
+    if COOKBOOK_TOKEN:
+        headers["Authorization"] = f"Bearer {COOKBOOK_TOKEN}"
     try:
-        d = datetime.date.fromisoformat(meal_dict.pop("last_day"))
-        meal_dict["days_ago"] = (today - d).days
-    except (ValueError, TypeError):
-        meal_dict["days_ago"] = None
-    return meal_dict
+        with _cookbook_opener.open(urllib.request.Request(url, headers=headers), timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        if not isinstance(data.get("recipes"), list):
+            raise ValueError("no recipes in the reply")
+        return data
+    except Exception as exc:  # down, a login redirect, 401, bad JSON: never break the feed
+        app.logger.warning("Cookbook Collection picks failed (%s): %s", COOKBOOK_API_URL, exc)
+        return None
+
+
+def catalog_dish(r, today):
+    """A Cookbook Collection recipe in the shape the suggestion card and "Log tonight" expect."""
+    online = bool(r.get("online"))
+    best = r.get("best_rating")
+    if isinstance(best, float) and best.is_integer():
+        best = int(best)
+    try:
+        days_ago = (today - datetime.date.fromisoformat(r["last_cooked"])).days
+    except (KeyError, TypeError, ValueError):
+        days_ago = None
+    return {
+        "name": r.get("name") or "",
+        "source_type": "online" if online else "cookbook",
+        "source_title": r.get("book_title") or "",
+        "source_detail": (r.get("url") if online else r.get("page")) or "",
+        "rating": best,
+        "days_ago": days_ago,
+        "is_new": not r.get("times_cooked") and days_ago is None and best is None,
+        "starred": bool(r.get("starred")),
+        "from_catalog": True,
+    }
+
+
+def pick_for_tonight(today=None, source="", fav=False, mode=None, include=(), exclude=(), rng=random):
+    """("Pick for tonight" card or None, info for the page).
+
+    mode  fav: rated FAVORITE_MIN+; new: never cooked (Cookbook Collection only); any: a coin flip
+          between those two, then anything not made lately. Without a mode, the Favorites chip decides.
+    include / exclude: ingredients. Cookbook Collection matches its ingredient tags and titles; past
+    dinners it doesn't know (restaurants, our own, unindexed books) are matched by name.
+    """
+    today = today or local_today()
+    mode = mode if mode in PICK_MODES else ("fav" if fav else "any")
+    info = {"mode": mode, "catalog": "off", "title_only": []}
+    use_catalog = bool(COOKBOOK_API_URL) and source in ("", "cookbook", "online")
+    if COOKBOOK_API_URL and not use_catalog:
+        info["catalog"] = "skipped"  # a Restaurant / Our own chip is on
+
+    def catalog(m, rest=REST_DAYS):
+        if not use_catalog:
+            return None
+        data = fetch_cookbook_picks(m, include, exclude, rest)
+        info["catalog"] = "down" if data is None else "ok"
+        if data is None:
+            return None
+        info["title_only"] = data.get("title_only") or []
+        dishes = [catalog_dish(r, today) for r in data["recipes"]]
+        return {"dishes": [d for d in dishes if not source or d["source_type"] == source],
+                "linked": {_norm(x) for x in data.get("linked_dinners") or []}}
+
+    def local(rest, rating_min, skip=frozenset()):
+        return [m for m in local_dishes(today, source, rest, rating_min)
+                if _norm(m["name"]) not in skip and ingredient_ok(m, include, exclude)]
+
+    def favorites(rest=REST_DAYS):
+        # Dishes Cookbook Collection has matched to a recipe are left to it: it knows their tags.
+        cat = catalog("fav", rest)
+        pool = local(rest, FAVORITE_MIN, cat["linked"] if cat else frozenset())
+        return pool + (cat["dishes"] if cat else [])
+
+    def something_new():
+        cat = catalog("new")
+        return cat["dishes"][:1] if cat else []  # its list is already a weighted draw; take the top
+
+    if mode == "new":
+        order = [something_new]
+    elif mode == "fav":
+        order = [favorites, lambda: local(2, FAVORITE_MIN)]
+    else:
+        first = [favorites, something_new] if not use_catalog or rng.random() < 0.5 else [something_new, favorites]
+        order = first + [lambda: local(REST_DAYS, None), lambda: local(2, None)]
+    for step in order:
+        pool = step()
+        if pool:
+            return rng.choice(pool), info
+    return None, info
+
+
+def suggest_dinner(today=None, source="", fav=False, **kw):
+    """Just the card; see pick_for_tonight."""
+    return pick_for_tonight(today, source, fav, **kw)[0]
 
 
 PAGE_SIZE = 100  # dinners per feed page
@@ -391,6 +540,13 @@ def index():
 
     cur_source = source if source in SOURCE_TYPES else ""
     cur_fav = "1" if fav == "1" else ""
+    pick_mode = request.args.get("mode", "").strip()
+    pick_mode = pick_mode if pick_mode in PICK_MODES else ""
+    include = parse_terms(request.args.get("with"))
+    exclude = parse_terms(request.args.get("without"))
+    # carried by every link on the page, so filtering the feed doesn't forget the picker's settings
+    pick_state = {"mode": pick_mode or None, "with": ", ".join(include) or None,
+                  "without": ", ".join(exclude) or None}
 
     sql = ("SELECT m.*, (SELECT filename FROM photos p WHERE p.meal_id = m.id "
            "ORDER BY p.id LIMIT 1) AS thumb FROM meals m WHERE 1=1")
@@ -421,8 +577,9 @@ def index():
         older = url_for("index", q=q or None, source=cur_source or None,
                         fav=cur_fav or None, before=f"{last['day']}.{last['id']}")
     missing_days = recent_missing_days() if not q and not cursor else []
-    suggestion = (suggest_dinner(source=cur_source, fav=cur_fav == "1")
-                  if suggest == "1" else None)
+    suggestion, pick_info = (pick_for_tonight(source=cur_source, fav=cur_fav == "1", mode=pick_mode or None,
+                                              include=include, exclude=exclude)
+                             if suggest == "1" else (None, None))
 
     return render_template(
         "index.html",
@@ -433,6 +590,10 @@ def index():
         cur_source=cur_source,
         cur_fav=cur_fav,
         suggestion=suggestion,
+        pick_info=pick_info,
+        pick_state=pick_state,
+        pick_modes=PICK_MODES,
+        cur_mode=pick_mode or ("fav" if cur_fav == "1" else "any"),
         older=older,
     )
 

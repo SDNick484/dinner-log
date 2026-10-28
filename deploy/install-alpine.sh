@@ -59,6 +59,10 @@ set_conf DINNER_BIND "${DINNER_BIND:-}" \
     "Address to bind; use 127.0.0.1 when the reverse proxy/tunnel runs on this host" 0.0.0.0
 set_conf "export DATA_DIR" "" "Database and photos" "$DATA_DIR"
 set_conf "export APP_TZ" "${DINNER_TZ:-}" "IANA time zone used for \"today\" (e.g. America/Chicago)" UTC
+set_conf "export COOKBOOK_URL" "" "Cookbook Collection's public address, for links (optional)" ""
+set_conf "export COOKBOOK_API_URL" "" "Cookbook Collection's private address, e.g. http://127.0.0.1:8767 (optional)" ""
+set_conf "export COOKBOOK_TOKEN" "" "Cookbook Collection's READ_TOKEN, for Pick for tonight (optional)" ""
+chmod 600 "$CONF"  # holds COOKBOOK_TOKEN; OpenRC reads it as root
 
 cat > /etc/init.d/dinner-log <<INITEOF
 #!/sbin/openrc-run

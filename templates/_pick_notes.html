@@ -1,0 +1,7 @@
+{# Why a pick might be thinner than expected. Included by index.html. #}
+{% if pick_info and pick_info.catalog == 'down' %}
+  <p class="pick-note">Cookbook Collection didn't answer, so this comes from past dinners only.</p>
+{% endif %}
+{% if pick_info and pick_info.title_only %}
+  <p class="pick-note">No ingredient tag for {{ pick_info.title_only | join(', ') }}: matched by recipe names only, so give the recipe a look.</p>
+{% endif %}
