@@ -59,6 +59,28 @@ CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id);
 """
 
 
+TRUSTED_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("TRUSTED_ORIGINS", "").split(",")
+                   if o.strip()}
+
+
+@app.before_request
+def refuse_cross_site_writes():
+    """CSRF defense in depth: the app has no session of its own, but an
+    authenticating proxy's cookie may ride along on a cross-site form post.
+    Browsers label such requests; refuse them. Requests without the headers
+    (curl, scripts, very old browsers) pass, since they can't carry a victim's cookie
+    from another site anyway."""
+    if request.method in ("GET", "HEAD", "OPTIONS"):
+        return None
+    if request.headers.get("Sec-Fetch-Site") == "cross-site":
+        abort(403)
+    origin = request.headers.get("Origin")
+    if origin and (urllib.parse.urlsplit(origin).netloc != request.host
+                   and origin.rstrip("/") not in TRUSTED_ORIGINS):
+        abort(403)  # includes "null", which a sandboxed attacker frame sends
+    return None
+
+
 def db():
     if "db" not in g:
         g.db = sqlite3.connect(DB_PATH)

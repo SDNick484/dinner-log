@@ -42,6 +42,7 @@ Environment variables:
 | `PORT`     | `8000`         | Port for `python app.py` only        |
 | `APP_TZ`   | `UTC`          | IANA time zone for "today" (default day, catch-up, suggestions), e.g. `America/Chicago`. Set it, or evening dinners default to tomorrow's date. |
 | `COOKBOOK_URL` | (unset)    | Base URL of a Cookbook Collection instance; enables catalog autocomplete and links |
+| `TRUSTED_ORIGINS` | (unset) | Extra comma-separated origins allowed to POST (see Security). Rarely needed. |
 
 Use a single gunicorn worker; SQLite is happiest that way and one worker is plenty for a household.
 
@@ -51,10 +52,10 @@ Use a single gunicorn worker; SQLite is happiest that way and one worker is plen
 
 ```sh
 # from the repository root, as root
-DINNER_PORT=8000 DINNER_TZ=America/Chicago sh deploy/install-alpine.sh
+DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh deploy/install-alpine.sh
 ```
 
-Re-run it after `git pull` to upgrade. Your data is kept.
+Re-run it after `git pull` to upgrade. Your data is kept, and so are your settings in `/etc/conf.d/dinner-log`; any `DINNER_*` variable you pass updates just that setting. `DINNER_BIND` defaults to `0.0.0.0` (all interfaces); see Security below.
 
 ## Security: read this before exposing it
 
@@ -65,6 +66,10 @@ Re-run it after `git pull` to upgrade. Your data is kept.
 - an identity-aware proxy such as Cloudflare Access or similar.
 
 If you publish it on the internet, make sure the access policy is in place *before* the hostname goes live.
+
+**Don't leave a side door open.** A proxy only protects the traffic that goes through it. If the app listens on all interfaces, anyone on the same network can skip the proxy and talk to it directly. When the proxy or tunnel runs on the same machine, bind to loopback: `DINNER_BIND=127.0.0.1` with the Alpine installer, or `"127.0.0.1:8000:8000"` under `ports:` in `docker-compose.yml`. When it runs elsewhere, firewall the port so only the proxy can reach it.
+
+**Cross-site requests.** Because login lives in the proxy's cookie, the app refuses POSTs that browsers mark as coming from another site (`Sec-Fetch-Site: cross-site`, or an `Origin` that doesn't match the request's `Host`). This assumes the proxy passes the original `Host` header through, which is the default for common tunnels and reverse proxies. If yours rewrites it and saves start failing with 403, list your public origin in `TRUSTED_ORIGINS` (e.g. `https://dinners.example.com`).
 
 ## Installing on a phone
 
