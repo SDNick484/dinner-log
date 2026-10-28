@@ -26,6 +26,7 @@ SOURCE_TYPES = {"cookbook": "Cookbook", "online": "Online",
                 "restaurant": "Restaurant", "original": "Our own"}
 APP_TZ = ZoneInfo(os.environ.get("APP_TZ", "UTC"))  # IANA name, e.g. America/Chicago
 MAX_PHOTO_EDGE = 1600  # phone photos are huge; downscale to keep storage sane
+MAX_DECODE_PIXELS = 40_000_000  # after JPEG draft scaling; ~120 MB as RGB
 
 def local_today(now=None):
     """Today's date in the household's time zone, not the server's (usually UTC)."""
@@ -83,18 +84,33 @@ with sqlite3.connect(DB_PATH) as _c:
 
 
 def save_photos(meal_id, files):
+    """Downscale and store uploads. Returns how many files were skipped.
+
+    Pixels are checked from the header before anything is decoded, and JPEGs
+    are decoded at reduced scale (draft), so a huge or hostile image can't
+    exhaust a small container's memory. EXIF (including GPS) is not carried
+    over to the saved JPEG; orientation is applied to the pixels first.
+    """
+    skipped = 0
     for f in files:
         if not f or not f.filename:
             continue
         try:
             img = Image.open(f.stream)
+            if img.format == "JPEG":
+                img.draft("RGB", (MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
+            if img.width * img.height > MAX_DECODE_PIXELS:
+                raise ValueError("image too large to decode safely")
             img = ImageOps.exif_transpose(img).convert("RGB")
-        except Exception:
-            continue  # not a readable image; skip it
+        except Exception as exc:
+            app.logger.info("Skipped photo %r: %s", f.filename, exc)
+            skipped += 1
+            continue
         img.thumbnail((MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
         name = uuid.uuid4().hex + ".jpg"
         img.save(os.path.join(PHOTO_DIR, name), "JPEG", quality=85, optimize=True)
         db().execute("INSERT INTO photos (meal_id, filename) VALUES (?, ?)", (meal_id, name))
+    return skipped
 
 
 def remove_photo_files(names):
@@ -384,9 +400,9 @@ def new_meal():
         cur = db().execute(
             "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating) "
             "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating)", v)
-        save_photos(cur.lastrowid, request.files.getlist("photos"))
+        skipped = save_photos(cur.lastrowid, request.files.getlist("photos"))
         db().commit()
-        return redirect(url_for("meal_detail", meal_id=cur.lastrowid))
+        return redirect(url_for("meal_detail", meal_id=cur.lastrowid, skipped=skipped or None))
     meal = parse_meal_params(request.args)
     return render_template("form.html", meal=meal, photos=[], types=SOURCE_TYPES,
                            books=titles_for("cookbook"), places=titles_for("restaurant"),
@@ -404,7 +420,9 @@ def get_meal(meal_id):
 @app.route("/meal/<int:meal_id>")
 def meal_detail(meal_id):
     meal, photos = get_meal(meal_id)
-    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES)
+    skipped = request.args.get("skipped", "")
+    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES,
+                           skipped=int(skipped) if skipped.isdigit() else 0)
 
 
 @app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])
@@ -418,16 +436,17 @@ def edit_meal(meal_id):
             "source_title=:source_title, source_detail=:source_detail, notes=:notes, "
             "rating=:rating WHERE id=:id", v)
         drop = [int(x) for x in request.form.getlist("delete_photo") if x.isdigit()]
+        names = []
         if drop:
             marks = ",".join("?" * len(drop))
             names = [r["filename"] for r in db().execute(
                 f"SELECT filename FROM photos WHERE meal_id=? AND id IN ({marks})",
                 [meal_id, *drop])]
             db().execute(f"DELETE FROM photos WHERE meal_id=? AND id IN ({marks})", [meal_id, *drop])
-            remove_photo_files(names)
-        save_photos(meal_id, request.files.getlist("photos"))
+        skipped = save_photos(meal_id, request.files.getlist("photos"))
         db().commit()
-        return redirect(url_for("meal_detail", meal_id=meal_id))
+        remove_photo_files(names)  # only once the rows are gone for good
+        return redirect(url_for("meal_detail", meal_id=meal_id, skipped=skipped or None))
     return render_template("form.html", meal=meal, photos=photos, types=SOURCE_TYPES,
                            books=titles_for("cookbook"), places=titles_for("restaurant"),
                            editing=True)
