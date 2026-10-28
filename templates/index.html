@@ -9,42 +9,79 @@
 <div class="filter-bar">
   <div class="filter-chips">
     <a class="chip-btn {% if not cur_source and not cur_fav %}active{% endif %}"
-       href="{{ url_for('index', q=q or None, suggest=1 if suggestion else None) }}">All</a>
+       href="{{ url_for('index', q=q or None, suggest=1 if suggestion else None, **pick_state) }}">All</a>
     <a class="chip-btn {% if cur_fav == '1' %}active{% endif %}"
-       href="{{ url_for('index', q=q or None, source=cur_source or None, fav=None if cur_fav == '1' else '1', suggest=1 if suggestion else None) }}">Favorites (★ 8+)</a>
+       href="{{ url_for('index', q=q or None, source=cur_source or None, fav=None if cur_fav == '1' else '1', suggest=1 if suggestion else None, **pick_state) }}">Favorites (★ 8+)</a>
     {% for k, v in types.items() %}
       <a class="chip-btn {% if cur_source == k %}active{% endif %}"
-         href="{{ url_for('index', q=q or None, source=None if cur_source == k else k, fav=cur_fav or None, suggest=1 if suggestion else None) }}">{{ v }}</a>
+         href="{{ url_for('index', q=q or None, source=None if cur_source == k else k, fav=cur_fav or None, suggest=1 if suggestion else None, **pick_state) }}">{{ v }}</a>
     {% endfor %}
   </div>
-  <a class="chip-btn suggest-btn {% if suggestion %}active{% endif %}"
-     href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None, suggest=1) }}">🎲 Pick for tonight</a>
+  <div class="pick-row">
+    <a class="chip-btn suggest-btn {% if suggestion %}active{% endif %}"
+       href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None, suggest=1, **pick_state) }}">🎲 Pick for tonight</a>
+    <details class="pick-opts" {% if pick_info and not suggestion %}open{% endif %}>
+      <summary class="chip-btn">
+        {{- pick_modes[cur_mode] -}}
+        {%- if pick_state.with %} · with {{ pick_state.with }}{% endif -%}
+        {%- if pick_state.without %} · no {{ pick_state.without }}{% endif %} ▾</summary>
+      <form class="pick-form" method="get" action="{{ url_for('index') }}">
+        {% if q %}<input type="hidden" name="q" value="{{ q }}">{% endif %}
+        {% if cur_source %}<input type="hidden" name="source" value="{{ cur_source }}">{% endif %}
+        {% if cur_fav %}<input type="hidden" name="fav" value="{{ cur_fav }}">{% endif %}
+        <input type="hidden" name="suggest" value="1">
+        <div class="seg" role="radiogroup" aria-label="What kind of dinner">
+          {% for k, v in pick_modes.items() %}
+            <label class="seg-opt"><input type="radio" name="mode" value="{{ k }}" {% if cur_mode == k %}checked{% endif %}><span>{{ v }}</span></label>
+          {% endfor %}
+        </div>
+        <label>With <input type="text" name="with" value="{{ pick_state.with or '' }}" placeholder="e.g. chicken, lemon"
+               autocapitalize="off" autocomplete="off" enterkeyhint="go"></label>
+        <label>Without <input type="text" name="without" value="{{ pick_state.without or '' }}" placeholder="e.g. pork, mushrooms"
+               autocapitalize="off" autocomplete="off" enterkeyhint="go"></label>
+        <div class="actions">
+          <button class="btn primary" type="submit">🎲 Pick</button>
+          <a class="btn" href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None, suggest=1) }}">Clear</a>
+        </div>
+      </form>
+    </details>
+  </div>
 </div>
 
 {% if suggestion %}
 <div class="suggest-card">
   <div class="suggest-header">
-    <span class="suggest-badge">🎲 Tonight's Idea</span>
+    <span class="suggest-badge">🎲 Tonight's Idea{% if suggestion.is_new %} · ✨ New to us{% endif %}</span>
     <a class="suggest-dismiss" href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None) }}" aria-label="Dismiss">&times;</a>
   </div>
   <div class="suggest-body">
     <div class="suggest-name">{{ suggestion.name }}</div>
     <div class="suggest-meta">
       <span class="chip {{ suggestion.source_type }}">{{ types[suggestion.source_type] }}</span>
-      {% if suggestion.source_title %}<span>{{ suggestion.source_title }}{% if suggestion.source_detail %} ({{ suggestion.source_detail }}){% endif %}</span>{% endif %}
+      {% set is_link = suggestion.source_detail and suggestion.source_detail.startswith(('http://', 'https://')) %}
+      {% if suggestion.source_title %}<span>{{ suggestion.source_title }}{% if suggestion.source_detail and not is_link %} ({{ suggestion.source_detail }}){% endif %}</span>{% endif %}
+      {% if is_link %}<a class="ext-link" href="{{ suggestion.source_detail }}" target="_blank" rel="noopener noreferrer">Open recipe ↗</a>{% endif %}
       {% if suggestion.rating %}<span class="score">★ {{ suggestion.rating }}/10</span>{% endif %}
+      {% if suggestion.starred %}<span>☆ on our to-try list</span>{% endif %}
       {% if suggestion.days_ago is not none %}
         <span class="suggest-ago">· Last made {% if suggestion.days_ago == 0 %}today{% elif suggestion.days_ago == 1 %}yesterday{% else %}{{ suggestion.days_ago }} days ago{% endif %}</span>
       {% endif %}
       {% if suggestion.source_type == 'cookbook' and cookbook_url and suggestion.source_title %}
-        <span class="suggest-cb">· <a class="ext-link suggest-cb-link" href="{{ suggestion.source_title | cookbook_search_url }}" target="_blank" rel="noopener noreferrer">View in Cookbook Collection ↗</a></span>
+        <span class="suggest-cb">· <a class="ext-link suggest-cb-link" href="{{ (suggestion.name if suggestion.from_catalog else suggestion.source_title) | cookbook_search_url }}" target="_blank" rel="noopener noreferrer">View in Cookbook Collection ↗</a></span>
       {% endif %}
     </div>
   </div>
+  {% include "_pick_notes.html" %}
   <div class="suggest-actions">
-    <a class="btn-subtle" href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None, suggest=1) }}">Roll again 🎲</a>
+    <a class="btn-subtle" href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None, suggest=1, **pick_state) }}">Roll again 🎲</a>
     <a class="btn primary suggest-log-btn" href="{{ url_for('new_meal', name=suggestion.name, source_type=suggestion.source_type, source_title=suggestion.source_title or None, source_detail=suggestion.source_detail or None) }}">Log tonight 🍽</a>
   </div>
+</div>
+{% elif pick_info %}
+<div class="suggest-card">
+  <div class="suggest-name">Nothing fits that.</div>
+  <p class="pick-note">{% if pick_info.mode == 'new' and pick_info.catalog != 'ok' %}“Try new” comes from Cookbook Collection, which isn't connected right now.{% else %}Try fewer ingredients, another mode, or turn off a filter chip.{% endif %}</p>
+  {% include "_pick_notes.html" %}
 </div>
 {% endif %}
 
