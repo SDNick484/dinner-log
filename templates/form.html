@@ -5,7 +5,13 @@
   <h1>{{ 'Edit dinner' if editing else 'Log a dinner' }}</h1>
 
   <label>Day
-    <input type="date" name="day" value="{{ meal['day'] }}" required>
+    <div class="day-input-row">
+      <input type="date" name="day" value="{{ meal['day'] }}" required id="day-input">
+      <div class="quick-dates">
+        <button type="button" class="btn-subtle" data-quick-date="today">Today</button>
+        <button type="button" class="btn-subtle" data-quick-date="yesterday">Yesterday</button>
+      </div>
+    </div>
   </label>
 
   <label>What did we have?
@@ -126,6 +132,20 @@
     rates.forEach(r => r.checked = false); lastChecked = null; syncRating();
   });
   syncRating();
+
+  const dayInput = document.getElementById('day-input');
+  document.querySelectorAll('[data-quick-date]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const d = new Date();
+      if (btn.dataset.quickDate === 'yesterday') {
+        d.setDate(d.getDate() - 1);
+      }
+      const yyyy = d.getFullYear();
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      dayInput.value = `${yyyy}-${mm}-${dd}`;
+    });
+  });
 
   document.getElementById('photos').addEventListener('change', e => {
     const box = document.getElementById('preview');

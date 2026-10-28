@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS photos (
     filename TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_meals_day ON meals(day DESC);
+CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id);
 """
 
 
@@ -65,6 +66,7 @@ with sqlite3.connect(DB_PATH) as _c:
     if "rating" not in [r[1] for r in _c.execute("PRAGMA table_info(meals)")]:
         _c.execute("ALTER TABLE meals ADD COLUMN rating INTEGER "
                    "CHECK (rating BETWEEN 1 AND 10)")
+    _c.execute("CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id)")
 
 
 def save_photos(meal_id, files):
@@ -90,26 +92,36 @@ def remove_photo_files(names):
             pass
 
 
-def form_values():
-    stype = request.form.get("source_type", "original")
-    if stype not in SOURCE_TYPES:
-        stype = "original"
-    day = request.form.get("day") or datetime.date.today().isoformat()
+def parse_meal_params(params, default_source="cookbook"):
+    if "source_type" in params:
+        stype = str(params.get("source_type") or "")
+        if stype not in SOURCE_TYPES:
+            stype = "original"
+    else:
+        stype = default_source
+    day = str(params.get("day") or "").strip() or datetime.date.today().isoformat()
     try:
         datetime.date.fromisoformat(day)
     except ValueError:
         day = datetime.date.today().isoformat()
-    raw = request.form.get("rating", "").strip()
+    raw = str(params.get("rating") or "").strip()
     rating = int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None
     return {
         "day": day,
-        "name": request.form.get("name", "").strip() or "Untitled dinner",
+        "name": str(params.get("name") or "").strip(),
         "source_type": stype,
-        "source_title": request.form.get("source_title", "").strip(),
-        "source_detail": request.form.get("source_detail", "").strip(),
-        "notes": request.form.get("notes", "").strip(),
+        "source_title": str(params.get("source_title") or "").strip(),
+        "source_detail": str(params.get("source_detail") or "").strip(),
+        "notes": str(params.get("notes") or "").strip(),
         "rating": rating,
     }
+
+
+def form_values():
+    v = parse_meal_params(request.form, default_source="original")
+    if not v["name"]:
+        v["name"] = "Untitled dinner"
+    return v
 
 
 def titles_for(source_type):
@@ -157,8 +169,7 @@ def new_meal():
         save_photos(cur.lastrowid, request.files.getlist("photos"))
         db().commit()
         return redirect(url_for("meal_detail", meal_id=cur.lastrowid))
-    meal = {"day": datetime.date.today().isoformat(), "name": "", "source_type": "cookbook",
-            "source_title": "", "source_detail": "", "notes": "", "rating": None}
+    meal = parse_meal_params(request.args)
     return render_template("form.html", meal=meal, photos=[], types=SOURCE_TYPES,
                            books=titles_for("cookbook"), places=titles_for("restaurant"),
                            editing=False)

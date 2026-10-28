@@ -1,3 +1,4 @@
+import datetime
 import importlib
 import io
 import os
@@ -107,9 +108,52 @@ def test_upgrades_database_created_before_ratings(tmp_path):
     assert "Old tacos" in text(client.get("/"))          # existing rows survive
     loc = client.post("/new", data={"name": "New", "rating": "7"}).headers["Location"]
     assert "★ 7" in text(client.get(loc))
+    with sqlite3.connect(tmp_path / "meals.db") as con:
+        indices = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='photos'"
+        ).fetchall()]
+    assert "idx_photos_meal_id" in indices
 
 
 def test_pwa_assets(client):
     assert client.get("/sw.js").status_code == 200
     assert client.get("/static/manifest.json").status_code == 200
     assert 'crossorigin="use-credentials"' in text(client.get("/"))
+
+
+def test_photos_meal_id_index_created(tmp_path):
+    load_app(tmp_path)
+    with sqlite3.connect(tmp_path / "meals.db") as con:
+        indices = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='photos'"
+        ).fetchall()]
+    assert "idx_photos_meal_id" in indices
+
+
+def test_new_meal_prefill_from_query_params(client):
+    resp = client.get("/new?day=2026-05-15&name=Tacos&source_type=cookbook&source_title=Mexican+Everyday&source_detail=p.+45&rating=9&notes=Delicious")
+    assert resp.status_code == 200
+    html = text(resp)
+    assert 'value="2026-05-15"' in html
+    assert 'value="Tacos"' in html
+    assert 'value="Mexican Everyday"' in html
+    assert 'value="p. 45"' in html
+    assert 'Delicious</textarea>' in html
+    assert 'value="9" checked' in html
+
+
+def test_new_meal_prefill_invalid_params_fallback(client):
+    resp = client.get("/new?day=not-a-date&source_type=invalid&rating=99")
+    assert resp.status_code == 200
+    html = text(resp)
+    assert f'value="{datetime.date.today().isoformat()}"' in html
+    assert 'value="original" checked' in html
+    assert 'checked' not in [line for line in html.splitlines() if 'name="rating"' in line and 'checked' in line]
+
+
+def test_quick_date_buttons_rendered(client):
+    resp = client.get("/new")
+    assert resp.status_code == 200
+    html = text(resp)
+    assert 'data-quick-date="today"' in html
+    assert 'data-quick-date="yesterday"' in html
