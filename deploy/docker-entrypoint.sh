@@ -6,7 +6,10 @@ set -eu
 if [ "$(id -u)" = 0 ]; then
     mkdir -p "$DATA_DIR/photos"
     if [ "$(stat -c %U "$DATA_DIR")" != dinnerlog ]; then
-        chown -R dinnerlog:dinnerlog "$DATA_DIR"
+        # Some mounts (NFS root_squash, CIFS) refuse chown; carry on and let
+        # the app report a real write failure if there is one.
+        chown -R dinnerlog:dinnerlog "$DATA_DIR" \
+            || echo "warning: could not chown $DATA_DIR; make it writable by uid 10001" >&2
     fi
     exec su-exec dinnerlog:dinnerlog "$@"
 fi

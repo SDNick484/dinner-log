@@ -36,6 +36,11 @@ chown -R root:root "$APP_DIR"
 chown -R dinnerlog:dinnerlog "$DATA_DIR"
 chmod 750 "$DATA_DIR"
 
+if [ -n "${DINNER_TZ:-}" ] && [ ! -f "/usr/share/zoneinfo/$DINNER_TZ" ]; then
+    echo "Unknown time zone '$DINNER_TZ' (expected an IANA name like America/Chicago)." >&2
+    exit 1
+fi
+
 echo "==> Installing OpenRC service"
 # Settings live in $CONF. On upgrade, existing values are kept; a variable
 # given on the command line (DINNER_PORT, DINNER_BIND, DINNER_TZ) updates

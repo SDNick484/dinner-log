@@ -24,7 +24,7 @@ docker compose up -d --build
 
 Open <http://localhost:8000> (or `http://<server-ip>:8000` from other devices on your network).
 
-All data lives in `./data` (`meals.db` and `photos/`). Back that folder up. The image is Alpine-based and runs the app as an unprivileged `dinnerlog` user; on first start it takes ownership of `./data` (older images ran as root).
+All data lives in `./data` (`meals.db` and `photos/`). Back that folder up. The image is Alpine-based and runs the app as an unprivileged `dinnerlog` user; on first start it takes ownership of `./data` (older images ran as root). The user is uid/gid 10001; if your storage refuses `chown` (some NFS/SMB mounts), make `./data` writable by that uid yourself. The `env_file` syntax in `docker-compose.yml` needs Docker Compose 2.24 or newer.
 
 ## Run without Docker
 

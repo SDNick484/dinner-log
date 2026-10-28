@@ -1,8 +1,10 @@
 FROM python:3.12-alpine
 WORKDIR /app
 # su-exec: drop from root to the app user after fixing data-dir ownership.
+# Fixed uid/gid 10001 so ./data's owner on the host is stable across rebuilds.
 RUN apk add --no-cache su-exec \
- && addgroup -S dinnerlog && adduser -S -D -H -G dinnerlog dinnerlog
+ && addgroup -S -g 10001 dinnerlog \
+ && adduser -S -D -H -u 10001 -G dinnerlog dinnerlog
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app.py ./
