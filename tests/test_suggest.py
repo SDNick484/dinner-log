@@ -51,3 +51,22 @@ def test_index_passes_filters_to_suggestion(tmp_path):
     # Only a restaurant exists; filtering to cookbooks must not suggest it.
     html = text(c.get("/?source=cookbook&suggest=1"))
     assert "Pad thai" not in html
+
+
+def test_source_filter_still_respects_recency_across_sources(tmp_path):
+    # Same dish logged from the book and later as our own riff, last night.
+    a = load_app(tmp_path)
+    with a.app.app_context():
+        add(a, "2026-08-01", "Lasagna", "cookbook", 9, "Some Book")
+        add(a, "2026-10-27", "Lasagna", "original", 8)
+        assert a.suggest_dinner(today=TODAY, source="cookbook") is None
+
+
+def test_source_filter_reports_true_last_made_and_matching_source(tmp_path):
+    a = load_app(tmp_path)
+    with a.app.app_context():
+        add(a, "2026-06-01", "Lasagna", "cookbook", 9, "Some Book")
+        add(a, "2026-08-01", "Lasagna", "original", 7)
+        s = a.suggest_dinner(today=TODAY, source="cookbook")
+        assert s["source_type"] == "cookbook" and s["source_title"] == "Some Book"
+        assert s["days_ago"] == (TODAY - datetime.date(2026, 8, 1)).days

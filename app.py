@@ -300,28 +300,28 @@ def suggest_dinner(today=None, source="", fav=False):
     cutoff_21 = (today - datetime.timedelta(days=21)).isoformat()
     cutoff_2 = (today - datetime.timedelta(days=2)).isoformat()
 
-    where, where_args = "", []
-    if source in SOURCE_TYPES:
-        where, where_args = "WHERE source_type = ?", [source]
+    # Recency and best rating span every time the dish was made, whatever its
+    # source; the source filter only decides which dishes are eligible and
+    # which logged row (title, page...) the card shows.
+    src_cond, src_args = ("source_type = ?", [source]) if source in SOURCE_TYPES else ("1", [])
 
     def query_candidate(cutoff_date, rating_min=None):
         sql = (
-            "SELECT m.*, latest.best_rating FROM meals m "
-            "JOIN ("
+            "SELECT m.*, d.last_day, d.best_rating FROM ("
             "  SELECT LOWER(TRIM(name)) AS norm_name, MAX(day) AS last_day, "
-            "         MAX(rating) AS best_rating "
-            f"  FROM meals {where} "
-            "  GROUP BY LOWER(TRIM(name)) "
-            "  HAVING last_day <= ?"
+            "         MAX(rating) AS best_rating, "
+            f"        MAX(CASE WHEN {src_cond} THEN day END) AS show_day "
+            "  FROM meals GROUP BY LOWER(TRIM(name)) "
+            "  HAVING last_day <= ? AND show_day IS NOT NULL"
             + (" AND best_rating >= ?" if rating_min is not None else "") +
-            ") latest ON LOWER(TRIM(m.name)) = latest.norm_name AND m.day = latest.last_day "
-            + (" AND m.source_type = ?" if where else "") +
-            " GROUP BY LOWER(TRIM(m.name)) ORDER BY RANDOM() LIMIT 1"
+            ") d JOIN meals m ON LOWER(TRIM(m.name)) = d.norm_name AND m.day = d.show_day "
+            f"AND {src_cond.replace('source_type', 'm.source_type')} "
+            "GROUP BY d.norm_name ORDER BY RANDOM() LIMIT 1"
         )
-        params = [*where_args, cutoff_date]
+        params = [*src_args, cutoff_date]
         if rating_min is not None:
             params.append(rating_min)
-        params.extend(where_args)
+        params.extend(src_args)
         return db().execute(sql, params).fetchone()
 
     floor = FAVORITE_MIN if fav else None
@@ -339,7 +339,7 @@ def suggest_dinner(today=None, source="", fav=False):
     meal_dict = dict(row)
     meal_dict["rating"] = meal_dict.pop("best_rating")
     try:
-        d = datetime.date.fromisoformat(meal_dict["day"])
+        d = datetime.date.fromisoformat(meal_dict.pop("last_day"))
         meal_dict["days_ago"] = (today - d).days
     except (ValueError, TypeError):
         meal_dict["days_ago"] = None
