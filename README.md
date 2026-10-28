@@ -18,12 +18,13 @@ Flask + SQLite, no external services. Photos are stored on disk and downscaled o
 ```sh
 git clone https://github.com/SDNick484/dinner-log.git
 cd dinner-log
+cp .env.example .env     # optional: set APP_TZ, COOKBOOK_URL
 docker compose up -d --build
 ```
 
 Open <http://localhost:8000> (or `http://<server-ip>:8000` from other devices on your network).
 
-All data lives in `./data` (`meals.db` and `photos/`). Back that folder up.
+All data lives in `./data` (`meals.db` and `photos/`). Back that folder up. The image is Alpine-based and runs the app as an unprivileged `dinnerlog` user; on first start it takes ownership of `./data` (older images ran as root).
 
 ## Run without Docker
 
@@ -34,7 +35,7 @@ python app.py            # development server on :8000
 DATA_DIR=/var/lib/dinner-log gunicorn -b 0.0.0.0:8000 -w 1 --threads 4 app:app
 ```
 
-Environment variables:
+Environment variables (see `.env.example`):
 
 | Variable   | Default        | Meaning                              |
 |------------|----------------|--------------------------------------|

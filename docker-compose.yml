@@ -3,7 +3,12 @@ services:
     build: .
     container_name: dinner-log
     restart: unless-stopped
+    env_file:
+      - path: .env      # copy .env.example to .env; optional
+        required: false
     ports:
+      # Behind a proxy/tunnel on this host? Use "127.0.0.1:8000:8000" so the
+      # app can't be reached around it (see README > Security).
       - "8000:8000"
     volumes:
       - ./data:/data   # meals.db + photos live here; back this folder up
