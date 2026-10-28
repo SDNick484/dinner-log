@@ -11,7 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (Flask, abort, g, redirect, render_template, request,
                    send_from_directory, url_for)
@@ -24,7 +24,19 @@ os.makedirs(PHOTO_DIR, exist_ok=True)
 
 SOURCE_TYPES = {"cookbook": "Cookbook", "online": "Online",
                 "restaurant": "Restaurant", "original": "Our own"}
-APP_TZ = ZoneInfo(os.environ.get("APP_TZ", "UTC"))  # IANA name, e.g. America/Chicago
+def _load_tz(name):
+    """IANA zone from APP_TZ (e.g. America/Chicago). Empty or unknown -> UTC,
+    with a warning, rather than refusing to start."""
+    name = (name or "").strip() or "UTC"
+    try:
+        return ZoneInfo(name)
+    except (ValueError, ZoneInfoNotFoundError):
+        import logging
+        logging.getLogger(__name__).warning("Unknown APP_TZ %r; using UTC", name)
+        return ZoneInfo("UTC")
+
+
+APP_TZ = _load_tz(os.environ.get("APP_TZ"))
 MAX_PHOTO_EDGE = 1600  # phone photos are huge; downscale to keep storage sane
 MAX_DECODE_PIXELS = 40_000_000  # after JPEG draft scaling; ~120 MB as RGB
 
@@ -164,7 +176,7 @@ def parse_meal_params(params, default_source="cookbook"):
         stype = default_source
     day = str(params.get("day") or "").strip() or local_today().isoformat()
     try:
-        datetime.date.fromisoformat(day)
+        day = datetime.date.fromisoformat(day).isoformat()  # normalize e.g. 20261028
     except ValueError:
         day = local_today().isoformat()
     raw = str(params.get("rating") or "").strip()
@@ -365,8 +377,7 @@ def parse_cursor(raw):
     """'YYYY-MM-DD.<id>' -> (day, id), or None if malformed."""
     day, _, mid = str(raw).partition(".")
     try:
-        datetime.date.fromisoformat(day)
-        return day, int(mid)
+        return datetime.date.fromisoformat(day).isoformat(), int(mid)
     except ValueError:
         return None
 
