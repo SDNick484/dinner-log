@@ -40,6 +40,8 @@ Environment variables:
 |------------|----------------|--------------------------------------|
 | `DATA_DIR` | `./data`       | Where the database and photos live   |
 | `PORT`     | `8000`         | Port for `python app.py` only        |
+| `APP_TZ`   | `UTC`          | IANA time zone for "today" (default day, catch-up, suggestions), e.g. `America/Chicago`. Set it, or evening dinners default to tomorrow's date. |
+| `COOKBOOK_URL` | (unset)    | Base URL of a Cookbook Collection instance; enables catalog autocomplete and links |
 
 Use a single gunicorn worker; SQLite is happiest that way and one worker is plenty for a household.
 
@@ -49,7 +51,7 @@ Use a single gunicorn worker; SQLite is happiest that way and one worker is plen
 
 ```sh
 # from the repository root, as root
-DINNER_PORT=8000 sh deploy/install-alpine.sh
+DINNER_PORT=8000 DINNER_TZ=America/Chicago sh deploy/install-alpine.sh
 ```
 
 Re-run it after `git pull` to upgrade. Your data is kept.

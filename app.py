@@ -11,6 +11,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
+from zoneinfo import ZoneInfo
 
 from flask import (Flask, abort, g, redirect, render_template, request,
                    send_from_directory, url_for)
@@ -23,7 +24,14 @@ os.makedirs(PHOTO_DIR, exist_ok=True)
 
 SOURCE_TYPES = {"cookbook": "Cookbook", "online": "Online",
                 "restaurant": "Restaurant", "original": "Our own"}
+APP_TZ = ZoneInfo(os.environ.get("APP_TZ", "UTC"))  # IANA name, e.g. America/Chicago
 MAX_PHOTO_EDGE = 1600  # phone photos are huge; downscale to keep storage sane
+
+def local_today(now=None):
+    """Today's date in the household's time zone, not the server's (usually UTC)."""
+    now = now or datetime.datetime.now(APP_TZ)
+    return now.astimezone(APP_TZ).date()
+
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
@@ -104,11 +112,11 @@ def parse_meal_params(params, default_source="cookbook"):
             stype = "original"
     else:
         stype = default_source
-    day = str(params.get("day") or "").strip() or datetime.date.today().isoformat()
+    day = str(params.get("day") or "").strip() or local_today().isoformat()
     try:
         datetime.date.fromisoformat(day)
     except ValueError:
-        day = datetime.date.today().isoformat()
+        day = local_today().isoformat()
     raw = str(params.get("rating") or "").strip()
     rating = int(raw) if raw.isdigit() and 1 <= int(raw) <= 10 else None
     return {
@@ -214,7 +222,7 @@ def recent_missing_days(days=7, today=None):
     if days <= 0:
         return []
     if today is None:
-        today = datetime.date.today()
+        today = local_today()
     window = [(today - datetime.timedelta(days=i)).isoformat() for i in range(days)]
 
     start_day = window[-1]
@@ -230,7 +238,7 @@ def recent_missing_days(days=7, today=None):
 @app.template_filter("gap_label")
 def gap_label(iso, today=None):
     if today is None:
-        today = datetime.date.today()
+        today = local_today()
     d = datetime.date.fromisoformat(iso)
     if d == today:
         return "Today"
@@ -241,7 +249,7 @@ def gap_label(iso, today=None):
 
 def suggest_dinner(today=None):
     if today is None:
-        today = datetime.date.today()
+        today = local_today()
     cutoff_21 = (today - datetime.timedelta(days=21)).isoformat()
     cutoff_2 = (today - datetime.timedelta(days=2)).isoformat()
 

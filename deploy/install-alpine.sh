@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install or upgrade Dinner Log on Alpine Linux (OpenRC) from this checkout.
 #
-#   DINNER_PORT=8000 sh deploy/install-alpine.sh
+#   DINNER_PORT=8000 DINNER_TZ=America/Chicago sh deploy/install-alpine.sh
 #
 # - installs python3, flask, pillow and gunicorn from Alpine packages
 # - copies the app to /opt/dinner-log
@@ -21,7 +21,7 @@ DATA_DIR=/var/lib/dinner-log
 CONF=/etc/conf.d/dinner-log
 
 echo "==> Installing packages"
-apk add --no-cache python3 py3-flask py3-pillow py3-gunicorn >/dev/null
+apk add --no-cache python3 py3-flask py3-pillow py3-gunicorn tzdata >/dev/null
 GUNICORN="$(command -v gunicorn)"
 
 echo "==> Creating user and directories"
@@ -37,12 +37,14 @@ chown -R dinnerlog:dinnerlog "$DATA_DIR"
 chmod 750 "$DATA_DIR"
 
 echo "==> Installing OpenRC service"
-# Keep an existing config on upgrade, unless DINNER_PORT is given explicitly.
-if [ ! -f "$CONF" ] || [ -n "${DINNER_PORT:-}" ]; then
+# Keep an existing config on upgrade, unless DINNER_PORT or DINNER_TZ is given explicitly.
+if [ ! -f "$CONF" ] || [ -n "${DINNER_PORT:-}" ] || [ -n "${DINNER_TZ:-}" ]; then
     cat > "$CONF" <<CONFEOF
 # Port Dinner Log listens on
 DINNER_PORT=${DINNER_PORT:-8000}
 export DATA_DIR=$DATA_DIR
+# IANA time zone used for "today" (e.g. America/Chicago); defaults to UTC
+export APP_TZ=${DINNER_TZ:-UTC}
 CONFEOF
 fi
 

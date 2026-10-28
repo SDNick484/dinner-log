@@ -515,3 +515,14 @@ def test_cookbook_links_rendered_when_configured(client, monkeypatch):
 
     form_unset = text(client.get("/new"))
     assert 'Browse catalog ↗' not in form_unset
+
+
+def test_local_today_uses_app_tz(monkeypatch):
+    import datetime as dt
+    from zoneinfo import ZoneInfo
+    import app as A
+    monkeypatch.setattr(A, "APP_TZ", ZoneInfo("America/Los_Angeles"))
+    evening = dt.datetime(2026, 10, 29, 2, 30, tzinfo=dt.timezone.utc)  # 7:30pm PDT on the 28th
+    assert A.local_today(evening) == dt.date(2026, 10, 28)
+    monkeypatch.setattr(A, "APP_TZ", ZoneInfo("UTC"))
+    assert A.local_today(evening) == dt.date(2026, 10, 29)

@@ -3,7 +3,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
-ENV DATA_DIR=/data
+ENV DATA_DIR=/data \
+    APP_TZ=UTC
 VOLUME /data
 EXPOSE 8000
 # Single worker is plenty for a family; SQLite likes it that way.
