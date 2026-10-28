@@ -157,3 +157,82 @@ def test_quick_date_buttons_rendered(client):
     html = text(resp)
     assert 'data-quick-date="today"' in html
     assert 'data-quick-date="yesterday"' in html
+
+
+def test_recent_missing_days_calculation(client, tmp_path):
+    app_module = load_app(tmp_path)
+    today = datetime.date(2026, 10, 28)
+    with app_module.app.app_context():
+        missing = app_module.recent_missing_days(days=7, today=today)
+        assert len(missing) == 7
+        assert missing[0] == "2026-10-28"
+        assert missing[-1] == "2026-10-22"
+
+        app_module.db().execute(
+            "INSERT INTO meals (day, name) VALUES ('2026-10-28', 'Curry'), ('2026-10-26', 'Pizza')"
+        )
+        app_module.db().commit()
+
+        missing = app_module.recent_missing_days(days=7, today=today)
+        assert len(missing) == 5
+        assert "2026-10-28" not in missing
+        assert "2026-10-26" not in missing
+        assert "2026-10-27" in missing
+
+
+def test_gap_label_filter(client, tmp_path):
+    app_module = load_app(tmp_path)
+    today = datetime.date(2026, 10, 28)
+    yesterday = datetime.date(2026, 10, 27)
+    past = datetime.date(2026, 10, 25)
+    with app_module.app.app_context():
+        assert app_module.gap_label(today.isoformat(), today=today) == "Today"
+        assert app_module.gap_label(yesterday.isoformat(), today=today) == "Yesterday"
+        assert app_module.gap_label(past.isoformat(), today=today) == "Sun Oct 25"
+
+
+def test_catch_up_pills_rendered_on_index(client):
+    resp = client.get("/")
+    assert resp.status_code == 200
+    html = text(resp)
+    assert 'class="gaps"' in html
+    assert 'Catch up:' in html
+    assert 'class="gap-pill"' in html
+    assert f'/new?day={datetime.date.today().isoformat()}' in html
+
+
+def test_catch_up_pills_hidden_when_all_logged(client):
+    today = datetime.date.today()
+    for i in range(7):
+        d = (today - datetime.timedelta(days=i)).isoformat()
+        client.post("/new", data={"day": d, "name": f"Dinner {i}"})
+    resp = client.get("/")
+    html = text(resp)
+    assert 'class="gaps"' not in html
+
+
+def test_catch_up_pills_hidden_during_search(client):
+    resp = client.get("/?q=anything")
+    html = text(resp)
+    assert 'class="gaps"' not in html
+
+
+def test_recent_missing_days_edge_cases_and_year_boundary(client, tmp_path):
+    app_module = load_app(tmp_path)
+    with app_module.app.app_context():
+        assert app_module.recent_missing_days(days=0) == []
+        assert app_module.recent_missing_days(days=-5) == []
+
+        jan3 = datetime.date(2026, 1, 3)
+        missing = app_module.recent_missing_days(days=7, today=jan3)
+        assert len(missing) == 7
+        assert missing[0] == "2026-01-03"
+        assert missing[-1] == "2025-12-28"
+
+        app_module.db().execute(
+            "INSERT INTO meals (day, name) VALUES ('2025-12-31', 'NYE Feast')"
+        )
+        app_module.db().commit()
+        missing = app_module.recent_missing_days(days=7, today=jan3)
+        assert len(missing) == 6
+        assert "2025-12-31" not in missing
