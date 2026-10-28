@@ -247,44 +247,59 @@ def gap_label(iso, today=None):
     return d.strftime("%a %b ") + str(d.day)
 
 
-def suggest_dinner(today=None):
+FAVORITE_MIN = 8
+
+
+def suggest_dinner(today=None, source="", fav=False):
+    """Pick a past dinner worth repeating.
+
+    A dish is grouped by its normalized name. Its rating is the best it has ever
+    been rated (an unrated repeat doesn't demote a favorite); its recency is the
+    last time it was made. `source` / `fav` mirror the feed's filter chips.
+    """
     if today is None:
         today = local_today()
     cutoff_21 = (today - datetime.timedelta(days=21)).isoformat()
     cutoff_2 = (today - datetime.timedelta(days=2)).isoformat()
 
+    where, where_args = "", []
+    if source in SOURCE_TYPES:
+        where, where_args = "WHERE source_type = ?", [source]
+
     def query_candidate(cutoff_date, rating_min=None):
         sql = (
-            "SELECT m.* FROM meals m "
+            "SELECT m.*, latest.best_rating FROM meals m "
             "JOIN ("
-            "  SELECT LOWER(TRIM(name)) AS norm_name, MAX(day) AS last_day "
-            "  FROM meals "
+            "  SELECT LOWER(TRIM(name)) AS norm_name, MAX(day) AS last_day, "
+            "         MAX(rating) AS best_rating "
+            f"  FROM meals {where} "
             "  GROUP BY LOWER(TRIM(name)) "
             "  HAVING last_day <= ?"
+            + (" AND best_rating >= ?" if rating_min is not None else "") +
             ") latest ON LOWER(TRIM(m.name)) = latest.norm_name AND m.day = latest.last_day "
+            + (" AND m.source_type = ?" if where else "") +
+            " GROUP BY LOWER(TRIM(m.name)) ORDER BY RANDOM() LIMIT 1"
         )
-        params = [cutoff_date]
+        params = [*where_args, cutoff_date]
         if rating_min is not None:
-            sql += " WHERE m.rating >= ?"
             params.append(rating_min)
-        sql += " GROUP BY LOWER(TRIM(m.name)) ORDER BY RANDOM() LIMIT 1"
+        params.extend(where_args)
         return db().execute(sql, params).fetchone()
 
-    # Priority 1: Rating >= 8, not made in last 21 days
-    row = query_candidate(cutoff_21, rating_min=8)
-
-    # Priority 2: Any meal not made in last 21 days
+    floor = FAVORITE_MIN if fav else None
+    # Priority 1: a favorite not made in the last 21 days
+    row = query_candidate(cutoff_21, rating_min=FAVORITE_MIN)
+    # Priority 2: anything (within the filters) not made in the last 21 days
     if row is None:
-        row = query_candidate(cutoff_21)
-
-    # Priority 3: Any meal not made in last 2 days
+        row = query_candidate(cutoff_21, rating_min=floor)
+    # Priority 3: anything (within the filters) not made in the last 2 days
     if row is None:
-        row = query_candidate(cutoff_2)
-
+        row = query_candidate(cutoff_2, rating_min=floor)
     if row is None:
         return None
 
     meal_dict = dict(row)
+    meal_dict["rating"] = meal_dict.pop("best_rating")
     try:
         d = datetime.date.fromisoformat(meal_dict["day"])
         meal_dict["days_ago"] = (today - d).days
@@ -314,12 +329,14 @@ def index():
         sql += " AND m.source_type = ?"
         args.append(cur_source)
     if cur_fav == "1":
-        sql += " AND m.rating >= 8"
+        sql += " AND m.rating >= ?"
+        args.append(FAVORITE_MIN)
 
     sql += " ORDER BY m.day DESC, m.id DESC LIMIT 500"
     meals = db().execute(sql, args).fetchall()
     missing_days = recent_missing_days() if not q else []
-    suggestion = suggest_dinner() if suggest == "1" else None
+    suggestion = (suggest_dinner(source=cur_source, fav=cur_fav == "1")
+                  if suggest == "1" else None)
 
     return render_template(
         "index.html",
