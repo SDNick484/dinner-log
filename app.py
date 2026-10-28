@@ -308,6 +308,19 @@ def suggest_dinner(today=None, source="", fav=False):
     return meal_dict
 
 
+PAGE_SIZE = 100  # dinners per feed page
+
+
+def parse_cursor(raw):
+    """'YYYY-MM-DD.<id>' -> (day, id), or None if malformed."""
+    day, _, mid = str(raw).partition(".")
+    try:
+        datetime.date.fromisoformat(day)
+        return day, int(mid)
+    except ValueError:
+        return None
+
+
 @app.route("/")
 def index():
     q = request.args.get("q", "").strip()
@@ -332,9 +345,21 @@ def index():
         sql += " AND m.rating >= ?"
         args.append(FAVORITE_MIN)
 
-    sql += " ORDER BY m.day DESC, m.id DESC LIMIT 500"
-    meals = db().execute(sql, args).fetchall()
-    missing_days = recent_missing_days() if not q else []
+    cursor = parse_cursor(request.args.get("before", ""))
+    if cursor:
+        sql += " AND (m.day < ? OR (m.day = ? AND m.id < ?))"
+        args.extend([cursor[0], cursor[0], cursor[1]])
+
+    # Keyset paging on (day, id): fetch one extra row to know if there's more.
+    sql += " ORDER BY m.day DESC, m.id DESC LIMIT ?"
+    meals = db().execute(sql, [*args, PAGE_SIZE + 1]).fetchall()
+    older = None
+    if len(meals) > PAGE_SIZE:
+        meals = meals[:PAGE_SIZE]
+        last = meals[-1]
+        older = url_for("index", q=q or None, source=cur_source or None,
+                        fav=cur_fav or None, before=f"{last['day']}.{last['id']}")
+    missing_days = recent_missing_days() if not q and not cursor else []
     suggestion = (suggest_dinner(source=cur_source, fav=cur_fav == "1")
                   if suggest == "1" else None)
 
@@ -346,7 +371,8 @@ def index():
         missing_days=missing_days,
         cur_source=cur_source,
         cur_fav=cur_fav,
-        suggestion=suggestion
+        suggestion=suggestion,
+        older=older,
     )
 
 
