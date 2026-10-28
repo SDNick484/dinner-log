@@ -2,7 +2,48 @@
 {% block content %}
 <form class="search" method="get" action="{{ url_for('index') }}">
   <input type="search" name="q" value="{{ q }}" placeholder="Search meals, cookbooks, notes…">
+  {% if cur_source %}<input type="hidden" name="source" value="{{ cur_source }}">{% endif %}
+  {% if cur_fav %}<input type="hidden" name="fav" value="{{ cur_fav }}">{% endif %}
 </form>
+
+<div class="filter-bar">
+  <div class="filter-chips">
+    <a class="chip-btn {% if not cur_source and not cur_fav %}active{% endif %}"
+       href="{{ url_for('index', q=q or None, suggest=1 if suggestion else None) }}">All</a>
+    <a class="chip-btn {% if cur_fav == '1' %}active{% endif %}"
+       href="{{ url_for('index', q=q or None, source=cur_source or None, fav=None if cur_fav == '1' else '1', suggest=1 if suggestion else None) }}">Favorites (★ 8+)</a>
+    {% for k, v in types.items() %}
+      <a class="chip-btn {% if cur_source == k %}active{% endif %}"
+         href="{{ url_for('index', q=q or None, source=None if cur_source == k else k, fav=cur_fav or None, suggest=1 if suggestion else None) }}">{{ v }}</a>
+    {% endfor %}
+  </div>
+  <a class="chip-btn suggest-btn {% if suggestion %}active{% endif %}"
+     href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None, suggest=1) }}">🎲 Pick for tonight</a>
+</div>
+
+{% if suggestion %}
+<div class="suggest-card">
+  <div class="suggest-header">
+    <span class="suggest-badge">🎲 Tonight's Idea</span>
+    <a class="suggest-dismiss" href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None) }}" aria-label="Dismiss">&times;</a>
+  </div>
+  <div class="suggest-body">
+    <div class="suggest-name">{{ suggestion.name }}</div>
+    <div class="suggest-meta">
+      <span class="chip {{ suggestion.source_type }}">{{ types[suggestion.source_type] }}</span>
+      {% if suggestion.source_title %}<span>{{ suggestion.source_title }}{% if suggestion.source_detail %} ({{ suggestion.source_detail }}){% endif %}</span>{% endif %}
+      {% if suggestion.rating %}<span class="score">★ {{ suggestion.rating }}/10</span>{% endif %}
+      {% if suggestion.days_ago is not none %}
+        <span class="suggest-ago">· Last made {% if suggestion.days_ago == 0 %}today{% elif suggestion.days_ago == 1 %}yesterday{% else %}{{ suggestion.days_ago }} days ago{% endif %}</span>
+      {% endif %}
+    </div>
+  </div>
+  <div class="suggest-actions">
+    <a class="btn-subtle" href="{{ url_for('index', q=q or None, source=cur_source or None, fav=cur_fav or None, suggest=1) }}">Roll again 🎲</a>
+    <a class="btn primary suggest-log-btn" href="{{ url_for('new_meal', name=suggestion.name, source_type=suggestion.source_type, source_title=suggestion.source_title or None, source_detail=suggestion.source_detail or None) }}">Log tonight 🍽</a>
+  </div>
+</div>
+{% endif %}
 
 {% if missing_days and not q %}
 <div class="gaps">
@@ -16,9 +57,11 @@
 </div>
 {% endif %}
 
+
+
 {% if not meals %}
   <p class="empty">
-    {% if q %}No dinners match “{{ q }}”.{% else %}Nothing logged yet. Tap <b>+</b> to add tonight's dinner.{% endif %}
+    {% if q %}No dinners match “{{ q }}”.{% elif cur_source or cur_fav == '1' %}No dinners match your filter.{% else %}Nothing logged yet. Tap <b>+</b> to add tonight's dinner.{% endif %}
   </p>
 {% endif %}
 

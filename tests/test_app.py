@@ -115,6 +115,7 @@ def test_upgrades_database_created_before_ratings(tmp_path):
     assert "idx_photos_meal_id" in indices
 
 
+
 def test_pwa_assets(client):
     assert client.get("/sw.js").status_code == 200
     assert client.get("/static/manifest.json").status_code == 200
@@ -140,6 +141,7 @@ def test_new_meal_prefill_from_query_params(client):
     assert 'value="p. 45"' in html
     assert 'Delicious</textarea>' in html
     assert 'value="9" checked' in html
+
 
 
 def test_new_meal_prefill_invalid_params_fallback(client):
@@ -236,3 +238,162 @@ def test_recent_missing_days_edge_cases_and_year_boundary(client, tmp_path):
         missing = app_module.recent_missing_days(days=7, today=jan3)
         assert len(missing) == 6
         assert "2025-12-31" not in missing
+
+
+def test_filter_by_source_and_favorites(client):
+    client.post("/new", data={"name": "Pasta", "source_type": "original", "rating": "9", "day": "2026-10-01"})
+    client.post("/new", data={"name": "Curry", "source_type": "cookbook", "source_title": "Thai Food", "rating": "9", "day": "2026-10-02"})
+    client.post("/new", data={"name": "Burger", "source_type": "restaurant", "source_title": "Diner", "rating": "6", "day": "2026-10-03"})
+
+    # Filter by source=cookbook
+    r = client.get("/?source=cookbook")
+    assert "Curry" in text(r)
+    assert "Pasta" not in text(r)
+    assert "Burger" not in text(r)
+
+    # Filter by fav=1 (rating >= 8)
+    r = client.get("/?fav=1")
+    assert "Pasta" in text(r)
+    assert "Curry" in text(r)
+    assert "Burger" not in text(r)
+
+    # Combined source=cookbook & fav=1
+    r = client.get("/?source=cookbook&fav=1")
+    assert "Curry" in text(r)
+    assert "Pasta" not in text(r)
+
+    # Invalid source is ignored gracefully
+    r = client.get("/?source=nonexistent")
+    assert r.status_code == 200
+    assert "Pasta" in text(r)
+    assert "Curry" in text(r)
+    assert "Burger" in text(r)
+
+    # Combined with search query q
+    r = client.get("/?q=Pasta&source=original")
+    assert '<div class="name">Pasta</div>' in text(r)
+    r = client.get("/?q=Pasta&source=cookbook")
+    assert '<div class="name">Pasta</div>' not in text(r)
+    assert 'No dinners match' in text(r)
+
+
+def test_suggest_dinner_logic(client, tmp_path):
+    app_module = load_app(tmp_path)
+    today = datetime.date(2026, 10, 28)
+    with app_module.app.app_context():
+        # Empty DB returns None
+        assert app_module.suggest_dinner(today=today) is None
+
+        # Add recent meal (yesterday) and older favorite (30 days ago)
+        app_module.db().execute(
+            "INSERT INTO meals (day, name, source_type, source_title, rating) "
+            "VALUES ('2026-10-27', 'Recent Stew', 'original', '', 9)"
+        )
+        app_module.db().execute(
+            "INSERT INTO meals (day, name, source_type, source_title, source_detail, rating) "
+            "VALUES ('2026-09-20', 'Old Lasagna', 'cookbook', 'Italian Bible', 'p. 110', 9)"
+        )
+        app_module.db().commit()
+
+        # Should pick the older favorite
+        s = app_module.suggest_dinner(today=today)
+        assert s is not None
+        assert s["name"] == "Old Lasagna"
+        assert s["days_ago"] == 38
+
+        # Edge case: If Old Lasagna was also made yesterday, it must NOT be suggested
+        app_module.db().execute(
+            "INSERT INTO meals (day, name, source_type, source_title, rating) "
+            "VALUES ('2026-10-27', 'Old Lasagna', 'cookbook', 'Italian Bible', 9)"
+        )
+        app_module.db().commit()
+        # Now both Recent Stew and Old Lasagna were made yesterday; nothing eligible
+        assert app_module.suggest_dinner(today=today) is None
+
+        # Priority 2: Non-favorite older than 21 days (e.g. rating 5, 25 days ago)
+        app_module.db().execute(
+            "INSERT INTO meals (day, name, source_type, rating) "
+            "VALUES ('2026-10-03', 'Simple Broth', 'original', 5)"
+        )
+        app_module.db().commit()
+        s2 = app_module.suggest_dinner(today=today)
+        assert s2 is not None
+        assert s2["name"] == "Simple Broth"
+        assert s2["days_ago"] == 25
+
+        # Priority 3: No meals older than 21 days, but meal made 5 days ago
+        app_module.db().execute("DELETE FROM meals")
+        app_module.db().execute(
+            "INSERT INTO meals (day, name, source_type, rating) "
+            "VALUES ('2026-10-23', 'Quick Stir Fry', 'original', 7)"
+        )
+        app_module.db().commit()
+        s3 = app_module.suggest_dinner(today=today)
+        assert s3 is not None
+        assert s3["name"] == "Quick Stir Fry"
+        assert s3["days_ago"] == 5
+
+        # Meal made today or yesterday is NEVER suggested
+        app_module.db().execute("DELETE FROM meals")
+        app_module.db().execute(
+            "INSERT INTO meals (day, name, source_type, rating) "
+            "VALUES ('2026-10-28', 'Today Salad', 'original', 10)"
+        )
+        app_module.db().execute(
+            "INSERT INTO meals (day, name, source_type, rating) "
+            "VALUES ('2026-10-27', 'Yesterday Pizza', 'original', 10)"
+        )
+        app_module.db().commit()
+        assert app_module.suggest_dinner(today=today) is None
+
+
+def test_filter_empty_state_and_chip_sanitization(client):
+    client.post("/new", data={"name": "Pasta", "source_type": "original", "rating": "6", "day": "2026-10-01"})
+
+    # Filter with no results shows filter empty state, NOT "Nothing logged yet"
+    r = client.get("/?source=cookbook")
+    html = text(r)
+    assert "No dinners match your filter." in html
+    assert "Nothing logged yet" not in html
+
+    r = client.get("/?fav=1")
+    html = text(r)
+    assert "No dinners match your filter." in html
+    assert "Nothing logged yet" not in html
+
+    # Unsanitized source falls back to All active
+    r = client.get("/?source=martian")
+    html = text(r)
+    assert '<a class="chip-btn active"\n       href="/">All</a>' in html or '<a class="chip-btn active" href="/">All</a>' in html or 'class="chip-btn active"' in html
+
+
+
+def test_filter_chips_and_suggestion_card_rendering(client):
+    client.post("/new", data={
+        "name": "Tacos",
+        "source_type": "cookbook",
+        "source_title": "Mexican Everyday",
+        "source_detail": "p. 42",
+        "rating": "9",
+        "day": "2026-09-01"
+    })
+    resp = client.get("/")
+    html = text(resp)
+    assert 'class="filter-bar"' in html
+    assert 'All' in html
+    assert 'Favorites (★ 8+)' in html
+    assert 'Pick for tonight' in html
+
+    # With suggest=1
+    resp = client.get("/?suggest=1")
+    html = text(resp)
+    assert 'class="suggest-card"' in html
+    assert 'Tacos' in html
+    assert 'Mexican Everyday' in html
+    assert 'p. 42' in html
+    assert 'Roll again' in html
+    assert 'Log tonight' in html
+    assert 'source_type=cookbook' in html
+    assert 'source_title=Mexican+Everyday' in html or 'source_title=Mexican%20Everyday' in html
+    assert 'source_detail=p.+42' in html or 'source_detail=p.%2042' in html
+    assert 'class="suggest-dismiss"' in html
