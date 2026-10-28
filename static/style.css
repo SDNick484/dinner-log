@@ -91,3 +91,11 @@ legend { font-size: .85rem; color: var(--muted); font-weight: 600; padding: 0 6p
   padding: 10px 12px; border-radius: 10px; }
 .gallery { display: grid; gap: 10px; margin-top: 14px; }
 .gallery img { width: 100%; border-radius: 12px; display: block; }
+
+.day-input-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.day-input-row input[type=date] { flex: 1; }
+.quick-dates { display: flex; gap: 6px; }
+.btn-subtle { padding: 8px 12px; border-radius: 8px; border: 1px solid var(--line);
+  background: var(--card); color: var(--fg); font: inherit; font-size: .85rem; font-weight: 600;
+  cursor: pointer; white-space: nowrap; }
+.btn-subtle:active { background: var(--line); }
