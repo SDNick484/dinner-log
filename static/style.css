@@ -60,8 +60,8 @@ legend small { font-weight: 400; }
 
 .form { display: grid; gap: 14px; }
 .form h1, .detail h1 { margin: 8px 0 0; font-size: 1.4rem; }
-.form label { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); font-weight: 600; }
-.form label[hidden] { display: none; }
+.form label, .form-field { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); font-weight: 600; }
+.form label[hidden], .form-field[hidden] { display: none; }
 input[type=text], input[type=date], textarea, input[type=file] {
   width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px;
   background: var(--card); color: var(--fg); font: inherit; }
@@ -135,3 +135,9 @@ legend { font-size: .85rem; color: var(--muted); font-weight: 600; padding: 0 6p
 .suggest-ago { font-size: .8rem; }
 .suggest-actions { display: flex; gap: 8px; align-items: center; margin-top: 4px; }
 .suggest-log-btn { padding: 10px 16px; text-align: center; }
+
+.ext-link { color: var(--accent); text-decoration: none; font-weight: 600; }
+.ext-link:hover { text-decoration: underline; }
+.cookbook-links { margin-top: 4px; font-size: .85rem; }
+.field-label-row { display: flex; justify-content: space-between; align-items: center; }
+.suggest-cb-link { font-size: .8rem; }

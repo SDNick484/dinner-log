@@ -29,10 +29,15 @@
       {% endfor %}
     </div>
 
-    <label data-show="cookbook online restaurant">
-      <span id="title-label">Cookbook</span>
-      <input type="text" name="source_title" value="{{ meal['source_title'] }}" list="books" autocomplete="off">
-    </label>
+    <div data-show="cookbook online restaurant" class="form-field">
+      <div class="field-label-row">
+        <label for="source-title-input" id="title-label">Cookbook</label>
+        {% if cookbook_url %}
+          <a id="browse-cookbooks" class="ext-link" href="{{ cookbook_url }}/#/" target="_blank" rel="noopener noreferrer" data-show="cookbook">Browse catalog ↗</a>
+        {% endif %}
+      </div>
+      <input type="text" id="source-title-input" name="source_title" value="{{ meal['source_title'] }}" list="books" autocomplete="off">
+    </div>
     <datalist id="books">{% for b in books %}<option value="{{ b }}">{% endfor %}</datalist>
     <datalist id="places">{% for p in places %}<option value="{{ p }}">{% endfor %}</datalist>
 
@@ -146,6 +151,7 @@
       dayInput.value = `${yyyy}-${mm}-${dd}`;
     });
   });
+
 
   document.getElementById('photos').addEventListener('change', e => {
     const box = document.getElementById('preview');

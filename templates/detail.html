@@ -8,13 +8,24 @@
 
   <div class="src">
     <span class="chip {{ meal.source_type }}">{{ types[meal.source_type] }}</span>
-    {% if meal.source_title %}<b>{{ meal.source_title }}</b>{% endif %}
+    {% if meal.source_title %}
+      {% if meal.source_type == 'cookbook' and cookbook_url %}
+        <a class="ext-link" href="{{ meal.source_title | cookbook_search_url }}" target="_blank" rel="noopener noreferrer"><b>{{ meal.source_title }}</b> ↗</a>
+      {% else %}
+        <b>{{ meal.source_title }}</b>
+      {% endif %}
+    {% endif %}
     {% if meal.source_detail %}
       {% if meal.source_detail.startswith('http') %}
         · <a href="{{ meal.source_detail }}" target="_blank" rel="noopener noreferrer">open recipe ↗</a>
       {% else %}
         · {{ meal.source_detail }}
       {% endif %}
+    {% endif %}
+    {% if meal.source_type == 'cookbook' and cookbook_url %}
+      <div class="cookbook-links">
+        <a class="ext-link" href="{{ meal.name | cookbook_search_url }}" target="_blank" rel="noopener noreferrer">Search recipe in Cookbook Collection ↗</a>
+      </div>
     {% endif %}
   </div>
 

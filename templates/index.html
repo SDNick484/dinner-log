@@ -36,6 +36,9 @@
       {% if suggestion.days_ago is not none %}
         <span class="suggest-ago">· Last made {% if suggestion.days_ago == 0 %}today{% elif suggestion.days_ago == 1 %}yesterday{% else %}{{ suggestion.days_ago }} days ago{% endif %}</span>
       {% endif %}
+      {% if suggestion.source_type == 'cookbook' and cookbook_url and suggestion.source_title %}
+        <span class="suggest-cb">· <a class="ext-link suggest-cb-link" href="{{ suggestion.source_title | cookbook_search_url }}" target="_blank" rel="noopener noreferrer">View in Cookbook Collection ↗</a></span>
+      {% endif %}
     </div>
   </div>
   <div class="suggest-actions">
