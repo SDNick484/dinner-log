@@ -60,6 +60,12 @@ DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh deploy/insta
 
 Re-run it after `git pull` to upgrade. Your data is kept, and so are your settings in `/etc/conf.d/dinner-log`; any `DINNER_*` variable you pass updates just that setting. `DINNER_BIND` defaults to `0.0.0.0` (all interfaces); see Security below.
 
+## Recipes from Cookbook Collection
+
+With `COOKBOOK_URL` (or `COOKBOOK_API_URL`) set, the form looks up the cookbook you type in Cookbook Collection's public catalog. If that book's index is there, a **Recipe from this book** field appears listing its recipes. Picking one fills in the page, and the dinner name if it's empty or came from an earlier pick; anything you typed yourself is left alone. The cookbook title is also changed to the catalog's spelling, which helps Cookbook Collection match the dinner to the recipe later.
+
+The browser asks Dinner Log (`/cookbook/recipes?title=…`), and Dinner Log asks Cookbook Collection's public `/api/books` and `/api/books/<id>`, caching each book's recipes for two minutes. No token is needed, and if the catalog is down the field simply doesn't appear.
+
 ## Pick for tonight
 
 **🎲 Pick for tonight** suggests a dinner. **Options ▾** next to it sets:

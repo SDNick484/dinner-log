@@ -209,7 +209,9 @@ COOKBOOK_URL = os.environ.get("COOKBOOK_URL", "").strip().rstrip("/")  # for lin
 # when both run on one host: faster, and /admin/api/pick sits behind the login on the public one.
 COOKBOOK_API_URL = (os.environ.get("COOKBOOK_API_URL", "").strip() or COOKBOOK_URL).rstrip("/")
 COOKBOOK_TOKEN = os.environ.get("COOKBOOK_TOKEN", "").strip()  # Cookbook Collection's READ_TOKEN
-_cookbook_cache = {"cached_at": 0, "titles": []}
+_cookbook_cache = {"cached_at": 0, "titles": [], "ids": {}}
+_recipe_cache = {}  # book id -> (fetched_at, [{"name", "page"}])
+RECIPE_TTL = 120
 
 
 def cookbook_search_url(query):
@@ -246,12 +248,57 @@ def fetch_cookbook_titles(timeout=1.5):
             books = data.get("books", [])
             titles = [b["title"].strip() for b in books if b.get("title")]
             _cookbook_cache["titles"] = titles
+            _cookbook_cache["ids"] = {title_key(b["title"]): b["id"] for b in books
+                                      if b.get("title") and isinstance(b.get("id"), int)}
             _cookbook_cache["cached_at"] = now
             return titles
     except Exception as exc:
         app.logger.warning("Failed to fetch books from Cookbook Collection (%s): %s", req_url, exc)
         _cookbook_cache["cached_at"] = now - 45
         return _cookbook_cache["titles"]
+
+
+def title_key(title):
+    """How a typed cookbook title is compared with the catalog's: no case, accents, spacing or
+    leading article, so "the zuni cafe cookbook" finds "The Zuni Café Cookbook"."""
+    plain = unicodedata.normalize("NFKD", str(title or "")).encode("ascii", "ignore").decode().lower()
+    words = re.findall(r"[a-z0-9]+", plain)
+    if words and words[0] in ("the", "a", "an"):
+        words = words[1:]
+    return " ".join(words)
+
+
+def cookbook_recipes(title, timeout=2.0):
+    """(catalog title, [{"name", "page"}]) for a cookbook in Cookbook Collection's index, or (None, [])
+    when it isn't there, isn't indexed, or the catalog doesn't answer. Uses the public API only."""
+    fetch_cookbook_titles()
+    key = title_key(title)
+    book_id = _cookbook_cache["ids"].get(key) if key else None
+    if book_id is None:
+        return None, []
+    now = time.time()
+    hit = _recipe_cache.get(book_id)
+    if hit and now - hit[0] < RECIPE_TTL:
+        return hit[1], hit[2]
+    req_url = f"{COOKBOOK_API_URL}/api/books/{book_id}"
+    try:
+        with urllib.request.urlopen(req_url, timeout=timeout) as resp:
+            book = json.loads(resp.read().decode("utf-8"))
+        recipes = [{"name": r["name"].strip(), "page": (r.get("page") or "").strip()}
+                   for r in book.get("recipes", []) if (r.get("name") or "").strip()]
+        _recipe_cache[book_id] = (now, book.get("title") or title, recipes)
+        return book.get("title") or title, recipes
+    except Exception as exc:
+        app.logger.warning("Failed to fetch recipes from Cookbook Collection (%s): %s", req_url, exc)
+        return (hit[1], hit[2]) if hit else (None, [])
+
+
+@app.route("/cookbook/recipes")
+def cookbook_recipes_route():
+    """The form's recipe picker: recipes indexed for the cookbook typed in "Cookbook".
+    Same-origin, so the browser never talks to Cookbook Collection directly."""
+    book, recipes = cookbook_recipes(request.args.get("title", "")[:200])
+    return {"book": book, "recipes": recipes}
 
 
 def titles_for(source_type):

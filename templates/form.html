@@ -38,6 +38,12 @@
       </div>
       <input type="text" id="source-title-input" name="source_title" value="{{ meal['source_title'] }}" list="books" autocomplete="off">
     </div>
+    <label id="recipe-field" class="form-field" hidden>
+      <span id="recipe-label">Recipe from this book</span>
+      <input type="text" id="recipe-input" list="book-recipes" autocomplete="off" autocapitalize="off"
+             placeholder="Start typing a recipe name">
+    </label>
+    <datalist id="book-recipes"></datalist>
     <datalist id="books">{% for b in books %}<option value="{{ b }}">{% endfor %}</datalist>
     <datalist id="places">{% for p in places %}<option value="{{ p }}">{% endfor %}</datalist>
 
@@ -117,6 +123,53 @@
   }
   form.querySelectorAll('input[name=source_type]').forEach(r => r.addEventListener('change', syncSource));
   syncSource();
+
+  // Recipe picker: when the cookbook is indexed in Cookbook Collection, offer its recipes. Picking one
+  // fills in the page, and the dinner name if it's empty or was filled in by an earlier pick.
+  const nameInput = form.querySelector('[name=name]');
+  const recipeField = document.getElementById('recipe-field');
+  const recipeInput = document.getElementById('recipe-input');
+  const recipeLabel = document.getElementById('recipe-label');
+  const recipeList = document.getElementById('book-recipes');
+  let recipes = new Map(), autoName = null, autoPage = null, loadedFor = null, seq = 0;
+
+  async function loadRecipes() {
+    const isBook = form.querySelector('input[name=source_type]:checked').value === 'cookbook';
+    const title = titleInput.value.trim();
+    if (!isBook || !title) { recipeField.hidden = true; return; }
+    if (title === loadedFor) { recipeField.hidden = recipes.size === 0; return; }
+    const mine = ++seq;
+    let data = {recipes: []};
+    try {
+      const res = await fetch('{{ url_for("cookbook_recipes_route") }}?title=' + encodeURIComponent(title),
+                              {credentials: 'same-origin'});
+      if (res.ok) data = await res.json();
+    } catch (e) { /* catalog unreachable: the form works as before */ }
+    if (mine !== seq) return;  // a newer title was typed meanwhile
+    loadedFor = title;
+    recipes = new Map();
+    recipeList.replaceChildren(...data.recipes.filter(r => !recipes.has(r.name) && recipes.set(r.name, r))
+      .map(r => { const o = document.createElement('option'); o.value = r.name; if (r.page) o.label = 'p. ' + r.page; return o; }));
+    recipeLabel.textContent = `Recipe from this book (${recipes.size} indexed)`;
+    recipeInput.value = recipes.has(nameInput.value.trim()) ? nameInput.value.trim() : '';
+    recipeField.hidden = recipes.size === 0;
+    if (data.book && titleInput.value.trim() === title) { titleInput.value = loadedFor = data.book; }  // the catalog's spelling
+  }
+
+  function pickRecipe() {
+    const r = recipes.get(recipeInput.value.trim());
+    if (!r) return;
+    if (!nameInput.value.trim() || nameInput.value === autoName) nameInput.value = autoName = r.name;
+    if (r.page && (!detailInput.value.trim() || detailInput.value === autoPage)) detailInput.value = autoPage = r.page;
+  }
+
+  let titleTimer;
+  titleInput.addEventListener('input', () => { clearTimeout(titleTimer); titleTimer = setTimeout(loadRecipes, 400); });
+  titleInput.addEventListener('change', loadRecipes);
+  form.querySelectorAll('input[name=source_type]').forEach(r => r.addEventListener('change', loadRecipes));
+  recipeInput.addEventListener('input', pickRecipe);
+  recipeInput.addEventListener('change', pickRecipe);
+  loadRecipes();
 
   // Rating: tap a number to set it, tap it again (or "Clear") to unset.
   const rateOut = document.getElementById('rating-out');
