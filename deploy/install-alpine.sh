@@ -1,7 +1,7 @@
 #!/bin/sh
 # Install or upgrade Dinner Log on Alpine Linux (OpenRC) from this checkout.
 #
-#   DINNER_PORT=8000 DINNER_TZ=America/Chicago sh deploy/install-alpine.sh
+#   DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh deploy/install-alpine.sh
 #
 # - installs python3, flask, pillow and gunicorn from Alpine packages
 # - copies the app to /opt/dinner-log
@@ -37,23 +37,30 @@ chown -R dinnerlog:dinnerlog "$DATA_DIR"
 chmod 750 "$DATA_DIR"
 
 echo "==> Installing OpenRC service"
-# Keep an existing config on upgrade, unless DINNER_PORT or DINNER_TZ is given explicitly.
-if [ ! -f "$CONF" ] || [ -n "${DINNER_PORT:-}" ] || [ -n "${DINNER_TZ:-}" ]; then
-    cat > "$CONF" <<CONFEOF
-# Port Dinner Log listens on
-DINNER_PORT=${DINNER_PORT:-8000}
-export DATA_DIR=$DATA_DIR
-# IANA time zone used for "today" (e.g. America/Chicago); defaults to UTC
-export APP_TZ=${DINNER_TZ:-UTC}
-CONFEOF
-fi
+# Settings live in $CONF. On upgrade, existing values are kept; a variable
+# given on the command line (DINNER_PORT, DINNER_BIND, DINNER_TZ) updates
+# just that setting.
+[ -f "$CONF" ] || : > "$CONF"
+set_conf() {  # set_conf KEY VALUE COMMENT -- add KEY if missing, or replace its value
+    if grep -q "^\(export \)\{0,1\}$1=" "$CONF"; then
+        [ -n "$2" ] && sed -i "s|^\(export \)\{0,1\}$1=.*|\1$1=$2|" "$CONF"
+    else
+        printf '# %s\n%s=%s\n' "$3" "$1" "${2:-$4}" >> "$CONF"
+    fi
+    return 0
+}
+set_conf DINNER_PORT "${DINNER_PORT:-}" "Port Dinner Log listens on" 8000
+set_conf DINNER_BIND "${DINNER_BIND:-}" \
+    "Address to bind; use 127.0.0.1 when the reverse proxy/tunnel runs on this host" 0.0.0.0
+set_conf "export DATA_DIR" "" "Database and photos" "$DATA_DIR"
+set_conf "export APP_TZ" "${DINNER_TZ:-}" "IANA time zone used for \"today\" (e.g. America/Chicago)" UTC
 
 cat > /etc/init.d/dinner-log <<INITEOF
 #!/sbin/openrc-run
 name="dinner-log"
 description="Dinner Log (household meal tracker)"
 command="$GUNICORN"
-command_args="-b 0.0.0.0:\${DINNER_PORT:-8000} -w 1 --threads 4 --chdir $APP_DIR app:app"
+command_args="-b \${DINNER_BIND:-0.0.0.0}:\${DINNER_PORT:-8000} -w 1 --threads 4 --chdir $APP_DIR app:app"
 command_user="dinnerlog:dinnerlog"
 command_background=true
 pidfile="/run/dinner-log.pid"
