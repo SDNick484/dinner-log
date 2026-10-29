@@ -63,7 +63,9 @@ CREATE TABLE IF NOT EXISTS meals (
     source_detail TEXT NOT NULL DEFAULT '',  -- page number, URL, or restaurant location
     notes TEXT NOT NULL DEFAULT '',
     rating INTEGER CHECK (rating BETWEEN 1 AND 10),  -- NULL = not rated
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cookbook_book_id INTEGER,                -- Cookbook Collection books.id, when picked from its catalog
+    cookbook_recipe_id INTEGER               -- Cookbook Collection recipes.id
 );
 CREATE TABLE IF NOT EXISTS photos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,6 +133,11 @@ with sqlite3.connect(DB_PATH) as _c:
         _c.execute("ALTER TABLE meals ADD COLUMN rating INTEGER "
                    "CHECK (rating BETWEEN 1 AND 10)")
     _c.execute("CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id)")
+    # Upgrade databases created before meals carried Cookbook Collection ids.
+    _cols = [r[1] for r in _c.execute("PRAGMA table_info(meals)")]
+    for _col in ("cookbook_book_id", "cookbook_recipe_id"):
+        if _col not in _cols:
+            _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} INTEGER")
 
 
 def save_photos(meal_id, files):
@@ -171,6 +178,15 @@ def remove_photo_files(names):
             pass
 
 
+CATALOG_SOURCES = ("cookbook", "online")
+
+
+def parse_cookbook_id(raw):
+    """A Cookbook Collection id from a form or link: a positive integer, else None."""
+    raw = str(raw if raw is not None else "").strip()
+    return int(raw) if raw.isascii() and raw.isdigit() and int(raw) > 0 else None
+
+
 def parse_meal_params(params, default_source="cookbook"):
     if "source_type" in params:
         stype = str(params.get("source_type") or "")
@@ -193,6 +209,9 @@ def parse_meal_params(params, default_source="cookbook"):
         "source_detail": str(params.get("source_detail") or "").strip(),
         "notes": str(params.get("notes") or "").strip(),
         "rating": rating,
+        # Only meals from Cookbook Collection's catalog keep its ids.
+        "cookbook_book_id": parse_cookbook_id(params.get("cookbook_book_id")) if stype in CATALOG_SOURCES else None,
+        "cookbook_recipe_id": parse_cookbook_id(params.get("cookbook_recipe_id")) if stype in CATALOG_SOURCES else None,
     }
 
 
@@ -666,8 +685,9 @@ def new_meal():
     if request.method == "POST":
         v = form_values()
         cur = db().execute(
-            "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating) "
-            "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating)", v)
+            "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating, "
+            "cookbook_book_id, cookbook_recipe_id) VALUES (:day, :name, :source_type, :source_title, "
+            ":source_detail, :notes, :rating, :cookbook_book_id, :cookbook_recipe_id)", v)
         skipped = save_photos(cur.lastrowid, request.files.getlist("photos"))
         db().commit()
         return redirect(url_for("meal_detail", meal_id=cur.lastrowid, skipped=skipped or None))
@@ -702,7 +722,8 @@ def edit_meal(meal_id):
         db().execute(
             "UPDATE meals SET day=:day, name=:name, source_type=:source_type, "
             "source_title=:source_title, source_detail=:source_detail, notes=:notes, "
-            "rating=:rating WHERE id=:id", v)
+            "rating=:rating, cookbook_book_id=:cookbook_book_id, cookbook_recipe_id=:cookbook_recipe_id "
+            "WHERE id=:id", v)
         drop = [int(x) for x in request.form.getlist("delete_photo") if x.isdigit()]
         names = []
         if drop:

@@ -2,6 +2,8 @@
 {% block title %}{{ 'Edit' if editing else 'New' }} dinner{% endblock %}
 {% block content %}
 <form method="post" enctype="multipart/form-data" class="form">
+  <input type="hidden" name="cookbook_book_id" id="cookbook-book-id" value="{{ meal['cookbook_book_id'] or '' }}">
+  <input type="hidden" name="cookbook_recipe_id" id="cookbook-recipe-id" value="{{ meal['cookbook_recipe_id'] or '' }}">
   <h1>{{ 'Edit dinner' if editing else 'Log a dinner' }}</h1>
 
   <label>Day
