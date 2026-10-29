@@ -148,7 +148,8 @@ def test_new_meal_prefill_invalid_params_fallback(client):
     resp = client.get("/new?day=not-a-date&source_type=invalid&rating=99")
     assert resp.status_code == 200
     html = text(resp)
-    assert f'value="{datetime.date.today().isoformat()}"' in html
+    today = sys.modules["app"].local_today()  # the app's "today" (APP_TZ), not this machine's
+    assert f'value="{today.isoformat()}"' in html
     assert 'value="original" checked' in html
     assert 'checked' not in [line for line in html.splitlines() if 'name="rating"' in line and 'checked' in line]
 
@@ -200,11 +201,11 @@ def test_catch_up_pills_rendered_on_index(client):
     assert 'class="gaps"' in html
     assert 'Catch up:' in html
     assert 'class="gap-pill"' in html
-    assert f'/new?day={datetime.date.today().isoformat()}' in html
+    assert f'/new?day={sys.modules["app"].local_today().isoformat()}' in html
 
 
 def test_catch_up_pills_hidden_when_all_logged(client):
-    today = datetime.date.today()
+    today = sys.modules["app"].local_today()
     for i in range(7):
         d = (today - datetime.timedelta(days=i)).isoformat()
         client.post("/new", data={"day": d, "name": f"Dinner {i}"})
@@ -526,3 +527,19 @@ def test_local_today_uses_app_tz(monkeypatch):
     assert A.local_today(evening) == dt.date(2026, 10, 28)
     monkeypatch.setattr(A, "APP_TZ", ZoneInfo("UTC"))
     assert A.local_today(evening) == dt.date(2026, 10, 29)
+
+
+def test_cookbook_url_without_scheme_gets_one(tmp_path, monkeypatch):
+    # A bare host made the catalog links relative: /cookbooks.example.com/#/?q=...
+    monkeypatch.setenv("COOKBOOK_URL", "cookbooks.example.com/")
+    monkeypatch.delenv("COOKBOOK_API_URL", raising=False)
+    a = load_app(tmp_path)
+    assert a.COOKBOOK_URL == a.COOKBOOK_API_URL == "https://cookbooks.example.com"
+    assert a.cookbook_search_url("Pulled pork") == "https://cookbooks.example.com/#/?q=Pulled+pork"
+    assert a.base_url("127.0.0.1:8767") == "http://127.0.0.1:8767"
+    assert a.base_url("localhost:8767") == "http://localhost:8767"
+    assert a.base_url("192.168.1.20:8767") == "http://192.168.1.20:8767"
+    assert a.base_url("http://cookbooks.example.com/") == "http://cookbooks.example.com"
+    assert a.base_url("") == ""
+    monkeypatch.delenv("COOKBOOK_URL")
+    load_app(tmp_path)

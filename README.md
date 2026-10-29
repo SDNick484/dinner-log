@@ -42,7 +42,7 @@ Environment variables (see `.env.example`):
 | `DATA_DIR` | `./data`       | Where the database and photos live   |
 | `PORT`     | `8000`         | Port for `python app.py` only        |
 | `APP_TZ`   | `UTC`          | IANA time zone for "today" (default day, catch-up, suggestions), e.g. `America/Chicago`. Set it, or evening dinners default to tomorrow's date. |
-| `COOKBOOK_URL` | (unset)    | Base URL of a Cookbook Collection instance; enables catalog autocomplete and links |
+| `COOKBOOK_URL` | (unset)    | Base URL of a Cookbook Collection instance, e.g. `https://cookbooks.example.com`; enables catalog autocomplete and links. A bare host gets `https://` added (`http://` for localhost and private addresses) |
 | `COOKBOOK_API_URL` | `COOKBOOK_URL` | Address this server uses to call Cookbook Collection. Set it to the private one (e.g. `http://127.0.0.1:8767`) when both run on one host |
 | `COOKBOOK_TOKEN` | (unset) | Cookbook Collection's `READ_TOKEN`; lets "Pick for tonight" draw on its recipes |
 | `TRUSTED_ORIGINS` | (unset) | Extra comma-separated origins allowed to POST (see Security). Rarely needed. |
