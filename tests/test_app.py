@@ -526,3 +526,19 @@ def test_local_today_uses_app_tz(monkeypatch):
     assert A.local_today(evening) == dt.date(2026, 10, 28)
     monkeypatch.setattr(A, "APP_TZ", ZoneInfo("UTC"))
     assert A.local_today(evening) == dt.date(2026, 10, 29)
+
+
+def test_cookbook_url_without_scheme_gets_one(tmp_path, monkeypatch):
+    # A bare host made the catalog links relative: /cookbooks.example.com/#/?q=...
+    monkeypatch.setenv("COOKBOOK_URL", "cookbooks.example.com/")
+    monkeypatch.delenv("COOKBOOK_API_URL", raising=False)
+    a = load_app(tmp_path)
+    assert a.COOKBOOK_URL == a.COOKBOOK_API_URL == "https://cookbooks.example.com"
+    assert a.cookbook_search_url("Pulled pork") == "https://cookbooks.example.com/#/?q=Pulled+pork"
+    assert a.base_url("127.0.0.1:8767") == "http://127.0.0.1:8767"
+    assert a.base_url("localhost:8767") == "http://localhost:8767"
+    assert a.base_url("192.168.1.20:8767") == "http://192.168.1.20:8767"
+    assert a.base_url("http://cookbooks.example.com/") == "http://cookbooks.example.com"
+    assert a.base_url("") == ""
+    monkeypatch.delenv("COOKBOOK_URL")
+    load_app(tmp_path)

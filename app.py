@@ -3,6 +3,7 @@
 Flask + SQLite, photos stored on disk. No auth: run it behind your LAN/VPN.
 """
 import datetime
+import ipaddress
 import json
 import os
 import random
@@ -204,10 +205,24 @@ def form_values():
 
 
 
-COOKBOOK_URL = os.environ.get("COOKBOOK_URL", "").strip().rstrip("/")  # for links in the browser
+def base_url(raw):
+    """A configured address as an absolute base URL. Without a scheme ("cookbooks.example.com") a link
+    would be relative to this site, so add one: http:// for localhost and private addresses, else https://."""
+    raw = (raw or "").strip().rstrip("/")
+    if not raw or "://" in raw:
+        return raw
+    host = urllib.parse.urlsplit("//" + raw).hostname or ""
+    try:
+        private = host == "localhost" or ipaddress.ip_address(host).is_private
+    except ValueError:
+        private = False
+    return ("http://" if private else "https://") + raw
+
+
+COOKBOOK_URL = base_url(os.environ.get("COOKBOOK_URL"))  # for links in the browser
 # Where this server calls Cookbook Collection. Point it at the private address (e.g. http://127.0.0.1:8767)
 # when both run on one host: faster, and /admin/api/pick sits behind the login on the public one.
-COOKBOOK_API_URL = (os.environ.get("COOKBOOK_API_URL", "").strip() or COOKBOOK_URL).rstrip("/")
+COOKBOOK_API_URL = base_url(os.environ.get("COOKBOOK_API_URL")) or COOKBOOK_URL
 COOKBOOK_TOKEN = os.environ.get("COOKBOOK_TOKEN", "").strip()  # Cookbook Collection's READ_TOKEN
 _cookbook_cache = {"cached_at": 0, "titles": [], "ids": {}}
 _recipe_cache = {}  # book id -> (fetched_at, [{"name", "page"}])
