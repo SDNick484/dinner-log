@@ -253,3 +253,29 @@ def test_index_picker_keeps_its_settings(tmp_path):
     assert "Nothing fits that." in html
     html = text(c.get("/?suggest=1&mode=new"))
     assert "isn't connected" in html
+
+
+def test_catalog_dish_keeps_ids(tmp_path):
+    a = load_app(tmp_path)
+    d = a.catalog_dish({**recipe("Roast Chicken", "Zuni", "342"), "id": 2203, "book_id": 17}, TODAY)
+    assert (d["cookbook_book_id"], d["cookbook_recipe_id"]) == (17, 2203)
+    d = a.catalog_dish(recipe("No ids"), TODAY)                       # an older Cookbook Collection
+    assert (d["cookbook_book_id"], d["cookbook_recipe_id"]) == (None, None)
+
+
+def test_log_tonight_link_carries_ids(tmp_path, monkeypatch):
+    a = load_app(tmp_path)
+    monkeypatch.setattr(a, "COOKBOOK_API_URL", "http://127.0.0.1:9")
+    monkeypatch.setattr(a, "fetch_cookbook_picks", lambda *a_, **k: catalog_reply(
+        {**recipe("Zuni Roast Chicken", "The Zuni Cafe Cookbook", "342"), "id": 2203, "book_id": 17}))
+    html = a.app.test_client().get("/?suggest=1&mode=new").get_data(as_text=True)
+    assert "cookbook_book_id=17" in html and "cookbook_recipe_id=2203" in html
+
+
+def test_local_dish_link_has_no_ids(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    c.post("/new", data={"name": "Tacos", "source_type": "cookbook", "source_title": "Mexican Everyday",
+                         "rating": "9", "day": "2026-09-01", "cookbook_book_id": "5", "cookbook_recipe_id": "6"})
+    html = c.get("/?suggest=1").get_data(as_text=True)
+    assert "Tacos" in html and "cookbook_book_id" not in html.split('class="suggest-card"', 1)[1].split("</a>", 1)[0]
