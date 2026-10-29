@@ -39,7 +39,9 @@ def test_upgrade_adds_id_columns(tmp_path):
 
 @pytest.mark.parametrize("raw,want", [("17", 17), (17, 17), (" 17 ", 17), ("x", None), ("0", None),
                                       ("-3", None), ("1e3", None), ("", None), (None, None),
-                                      ("١٢", None)])
+                                      ("١٢", None), ("9" * 25, None), ("9" * 5000, None),
+                                      (str(2**63 - 1), 2**63 - 1), (str(2**63), None)],
+                         ids=lambda v: repr(v)[:12] if isinstance(v, str) else None)
 def test_parse_cookbook_id(tmp_path, raw, want):
     assert load_app(tmp_path).parse_cookbook_id(raw) == want
 
@@ -162,3 +164,12 @@ def test_history_etag(hist):
     c.post("/meal/2/delete")
     deleted = get(c, etag=edited.headers["ETag"])
     assert deleted.status_code == 200 and "Marbella" not in deleted.get_data(as_text=True)
+
+
+def test_oversized_ids_are_dropped_not_500(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    assert c.get("/new?source_type=cookbook&cookbook_book_id=" + "9" * 5000).status_code == 200
+    r = c.post("/new", data={"name": "x", "source_type": "cookbook", "cookbook_book_id": "9" * 25})
+    assert r.status_code == 302
+    assert row(a, 1) == (None, None)

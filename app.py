@@ -181,12 +181,16 @@ def remove_photo_files(names):
 
 
 CATALOG_SOURCES = ("cookbook", "online")
+SQLITE_INT_MAX = 2**63 - 1
 
 
 def parse_cookbook_id(raw):
     """A Cookbook Collection id from a form or link: a positive integer, else None."""
     raw = str(raw if raw is not None else "").strip()
-    return int(raw) if raw.isascii() and raw.isdigit() and int(raw) > 0 else None
+    if not (raw.isascii() and raw.isdigit() and len(raw) <= 19):  # SQLite INTEGER is 64-bit
+        return None
+    n = int(raw)
+    return n if 0 < n <= SQLITE_INT_MAX else None
 
 
 def parse_meal_params(params, default_source="cookbook"):

@@ -278,4 +278,5 @@ def test_local_dish_link_has_no_ids(tmp_path):
     c.post("/new", data={"name": "Tacos", "source_type": "cookbook", "source_title": "Mexican Everyday",
                          "rating": "9", "day": "2026-09-01", "cookbook_book_id": "5", "cookbook_recipe_id": "6"})
     html = c.get("/?suggest=1").get_data(as_text=True)
-    assert "Tacos" in html and "cookbook_book_id" not in html.split('class="suggest-card"', 1)[1].split("</a>", 1)[0]
+    log_href = html.split('suggest-log-btn" href="', 1)[1].split('"', 1)[0]
+    assert "name=Tacos" in log_href and "cookbook_" not in log_href
