@@ -148,7 +148,8 @@ def test_new_meal_prefill_invalid_params_fallback(client):
     resp = client.get("/new?day=not-a-date&source_type=invalid&rating=99")
     assert resp.status_code == 200
     html = text(resp)
-    assert f'value="{datetime.date.today().isoformat()}"' in html
+    today = sys.modules["app"].local_today()  # the app's "today" (APP_TZ), not this machine's
+    assert f'value="{today.isoformat()}"' in html
     assert 'value="original" checked' in html
     assert 'checked' not in [line for line in html.splitlines() if 'name="rating"' in line and 'checked' in line]
 
@@ -200,11 +201,11 @@ def test_catch_up_pills_rendered_on_index(client):
     assert 'class="gaps"' in html
     assert 'Catch up:' in html
     assert 'class="gap-pill"' in html
-    assert f'/new?day={datetime.date.today().isoformat()}' in html
+    assert f'/new?day={sys.modules["app"].local_today().isoformat()}' in html
 
 
 def test_catch_up_pills_hidden_when_all_logged(client):
-    today = datetime.date.today()
+    today = sys.modules["app"].local_today()
     for i in range(7):
         d = (today - datetime.timedelta(days=i)).isoformat()
         client.post("/new", data={"day": d, "name": f"Dinner {i}"})
