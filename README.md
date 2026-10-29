@@ -59,7 +59,15 @@ Use a single gunicorn worker; SQLite is happiest that way and one worker is plen
 DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh deploy/install-alpine.sh
 ```
 
-Re-run it after `git pull` to upgrade. Your data is kept, and so are your settings in `/etc/conf.d/dinner-log`; any `DINNER_*` variable you pass updates just that setting. `DINNER_BIND` defaults to `0.0.0.0` (all interfaces); see Security below.
+To install on a server without a checkout, build a one-file installer and copy that over instead:
+
+```sh
+sh deploy/build.sh                         # -> dist/setup-dinner-log.sh (app + installer in one file)
+scp dist/setup-dinner-log.sh root@<server>:
+DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh setup-dinner-log.sh   # on the server, as root
+```
+
+It unpacks the app to a temporary folder and runs the same `deploy/install-alpine.sh`. Re-run the installer (either way) after `git pull` to upgrade. Your data is kept, and so are your settings in `/etc/conf.d/dinner-log`; any `DINNER_*` variable you pass updates just that setting. `DINNER_BIND` defaults to `0.0.0.0` (all interfaces); see Security below.
 
 ## Recipes from Cookbook Collection
 
