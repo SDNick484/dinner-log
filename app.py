@@ -3,6 +3,8 @@
 Flask + SQLite, photos stored on disk. No auth: run it behind your LAN/VPN.
 """
 import datetime
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -243,6 +245,8 @@ COOKBOOK_URL = base_url(os.environ.get("COOKBOOK_URL"))  # for links in the brow
 # when both run on one host: faster, and /admin/api/pick sits behind the login on the public one.
 COOKBOOK_API_URL = base_url(os.environ.get("COOKBOOK_API_URL")) or COOKBOOK_URL
 COOKBOOK_TOKEN = os.environ.get("COOKBOOK_TOKEN", "").strip()  # Cookbook Collection's READ_TOKEN
+# Lets Cookbook Collection read cooking history from /api/history. Unset: the route doesn't exist.
+HISTORY_TOKEN = os.environ.get("HISTORY_TOKEN", "").strip()
 _cookbook_cache = {"cached_at": 0, "titles": [], "ids": {}}
 _recipe_cache = {}  # book id -> (fetched_at, [{"name", "page"}])
 RECIPE_TTL = 120
@@ -760,6 +764,37 @@ def photo(filename):
     resp = send_from_directory(PHOTO_DIR, filename)
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return resp
+
+
+HISTORY_VERSION = 1
+HISTORY_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_detail", "rating",
+                  "cookbook_book_id", "cookbook_recipe_id")
+
+
+def history_rows(con):
+    """Meals Cookbook Collection can match to its catalog: from a cookbook or website, with a link, or
+    stamped with its ids. Restaurant and home-recipe dinners without a link are never sent."""
+    return [dict(zip(HISTORY_FIELDS, r)) for r in con.execute(
+        f"SELECT {', '.join(HISTORY_FIELDS)} FROM meals "
+        "WHERE source_type IN ('cookbook', 'online') OR source_detail LIKE '%://%' OR source_title LIKE '%://%' "
+        "OR cookbook_book_id IS NOT NULL OR cookbook_recipe_id IS NOT NULL ORDER BY id")]
+
+
+@app.route("/api/history")
+def history():
+    """Read-only cooking history for Cookbook Collection, behind HISTORY_TOKEN. The whole list every time,
+    with an ETag so an unchanged history costs a 304."""
+    if not HISTORY_TOKEN:
+        abort(404)
+    auth = request.headers.get("Authorization", "")
+    if auth[:7].lower() != "bearer " or not hmac.compare_digest(auth[7:].strip().encode(), HISTORY_TOKEN.encode()):
+        return {"error": "unauthorized"}, 401
+    body = json.dumps({"version": HISTORY_VERSION, "meals": history_rows(db())}, separators=(",", ":")).encode()
+    etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-store"}
+    if request.headers.get("If-None-Match") == etag:
+        return "", 304, headers
+    return body, 200, {**headers, "Content-Type": "application/json"}
 
 
 @app.route("/sw.js")
