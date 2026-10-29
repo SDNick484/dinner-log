@@ -62,7 +62,8 @@ set_conf "export APP_TZ" "${DINNER_TZ:-}" "IANA time zone used for \"today\" (e.
 set_conf "export COOKBOOK_URL" "" "Cookbook Collection's public address, for links (optional)" ""
 set_conf "export COOKBOOK_API_URL" "" "Cookbook Collection's private address, e.g. http://127.0.0.1:8767 (optional)" ""
 set_conf "export COOKBOOK_TOKEN" "" "Cookbook Collection's READ_TOKEN, for Pick for tonight (optional)" ""
-chmod 600 "$CONF"  # holds COOKBOOK_TOKEN; OpenRC reads it as root
+set_conf "export HISTORY_TOKEN" "" "Token Cookbook Collection uses to read cooking history (optional)" ""
+chmod 600 "$CONF"  # holds COOKBOOK_TOKEN and HISTORY_TOKEN; OpenRC reads it as root
 
 cat > /etc/init.d/dinner-log <<INITEOF
 #!/sbin/openrc-run

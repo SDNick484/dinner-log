@@ -3,6 +3,8 @@
 Flask + SQLite, photos stored on disk. No auth: run it behind your LAN/VPN.
 """
 import datetime
+import hashlib
+import hmac
 import ipaddress
 import json
 import os
@@ -63,7 +65,9 @@ CREATE TABLE IF NOT EXISTS meals (
     source_detail TEXT NOT NULL DEFAULT '',  -- page number, URL, or restaurant location
     notes TEXT NOT NULL DEFAULT '',
     rating INTEGER CHECK (rating BETWEEN 1 AND 10),  -- NULL = not rated
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cookbook_book_id INTEGER,                -- Cookbook Collection books.id, when picked from its catalog
+    cookbook_recipe_id INTEGER               -- Cookbook Collection recipes.id
 );
 CREATE TABLE IF NOT EXISTS photos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,6 +135,11 @@ with sqlite3.connect(DB_PATH) as _c:
         _c.execute("ALTER TABLE meals ADD COLUMN rating INTEGER "
                    "CHECK (rating BETWEEN 1 AND 10)")
     _c.execute("CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id)")
+    # Upgrade databases created before meals carried Cookbook Collection ids.
+    _cols = [r[1] for r in _c.execute("PRAGMA table_info(meals)")]
+    for _col in ("cookbook_book_id", "cookbook_recipe_id"):
+        if _col not in _cols:
+            _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} INTEGER")
 
 
 def save_photos(meal_id, files):
@@ -171,6 +180,19 @@ def remove_photo_files(names):
             pass
 
 
+CATALOG_SOURCES = ("cookbook", "online")
+SQLITE_INT_MAX = 2**63 - 1
+
+
+def parse_cookbook_id(raw):
+    """A Cookbook Collection id from a form or link: a positive integer, else None."""
+    raw = str(raw if raw is not None else "").strip()
+    if not (raw.isascii() and raw.isdigit() and len(raw) <= 19):  # SQLite INTEGER is 64-bit
+        return None
+    n = int(raw)
+    return n if 0 < n <= SQLITE_INT_MAX else None
+
+
 def parse_meal_params(params, default_source="cookbook"):
     if "source_type" in params:
         stype = str(params.get("source_type") or "")
@@ -193,6 +215,9 @@ def parse_meal_params(params, default_source="cookbook"):
         "source_detail": str(params.get("source_detail") or "").strip(),
         "notes": str(params.get("notes") or "").strip(),
         "rating": rating,
+        # Only meals from Cookbook Collection's catalog keep its ids.
+        "cookbook_book_id": parse_cookbook_id(params.get("cookbook_book_id")) if stype in CATALOG_SOURCES else None,
+        "cookbook_recipe_id": parse_cookbook_id(params.get("cookbook_recipe_id")) if stype in CATALOG_SOURCES else None,
     }
 
 
@@ -224,6 +249,8 @@ COOKBOOK_URL = base_url(os.environ.get("COOKBOOK_URL"))  # for links in the brow
 # when both run on one host: faster, and /admin/api/pick sits behind the login on the public one.
 COOKBOOK_API_URL = base_url(os.environ.get("COOKBOOK_API_URL")) or COOKBOOK_URL
 COOKBOOK_TOKEN = os.environ.get("COOKBOOK_TOKEN", "").strip()  # Cookbook Collection's READ_TOKEN
+# Lets Cookbook Collection read cooking history from /api/history. Unset: the route doesn't exist.
+HISTORY_TOKEN = os.environ.get("HISTORY_TOKEN", "").strip()
 _cookbook_cache = {"cached_at": 0, "titles": [], "ids": {}}
 _recipe_cache = {}  # book id -> (fetched_at, [{"name", "page"}])
 RECIPE_TTL = 120
@@ -284,36 +311,37 @@ def title_key(title):
 
 
 def cookbook_recipes(title, timeout=2.0):
-    """(catalog title, [{"name", "page"}]) for a cookbook in Cookbook Collection's index, or (None, [])
-    when it isn't there, isn't indexed, or the catalog doesn't answer. Uses the public API only."""
+    """(catalog title, catalog book id, [{"id", "name", "page"}]) for a cookbook in Cookbook Collection's
+    index, or (None, None, []) when it isn't there, isn't indexed, or the catalog doesn't answer.
+    Uses the public API only."""
     fetch_cookbook_titles()
     key = title_key(title)
     book_id = _cookbook_cache["ids"].get(key) if key else None
     if book_id is None:
-        return None, []
+        return None, None, []
     now = time.time()
     hit = _recipe_cache.get(book_id)
     if hit and now - hit[0] < RECIPE_TTL:
-        return hit[1], hit[2]
+        return hit[1], book_id, hit[2]
     req_url = f"{COOKBOOK_API_URL}/api/books/{book_id}"
     try:
         with urllib.request.urlopen(req_url, timeout=timeout) as resp:
             book = json.loads(resp.read().decode("utf-8"))
-        recipes = [{"name": r["name"].strip(), "page": (r.get("page") or "").strip()}
+        recipes = [{"id": r.get("id"), "name": r["name"].strip(), "page": (r.get("page") or "").strip()}
                    for r in book.get("recipes", []) if (r.get("name") or "").strip()]
         _recipe_cache[book_id] = (now, book.get("title") or title, recipes)
-        return book.get("title") or title, recipes
+        return book.get("title") or title, book_id, recipes
     except Exception as exc:
         app.logger.warning("Failed to fetch recipes from Cookbook Collection (%s): %s", req_url, exc)
-        return (hit[1], hit[2]) if hit else (None, [])
+        return (hit[1], book_id, hit[2]) if hit else (None, None, [])
 
 
 @app.route("/cookbook/recipes")
 def cookbook_recipes_route():
     """The form's recipe picker: recipes indexed for the cookbook typed in "Cookbook".
     Same-origin, so the browser never talks to Cookbook Collection directly."""
-    book, recipes = cookbook_recipes(request.args.get("title", "")[:200])
-    return {"book": book, "recipes": recipes}
+    book, book_id, recipes = cookbook_recipes(request.args.get("title", "")[:200])
+    return {"book": book, "book_id": book_id, "recipes": recipes}
 
 
 def titles_for(source_type):
@@ -518,6 +546,8 @@ def catalog_dish(r, today):
         "is_new": not r.get("times_cooked") and days_ago is None and best is None,
         "starred": bool(r.get("starred")),
         "from_catalog": True,
+        "cookbook_book_id": r.get("book_id"),
+        "cookbook_recipe_id": r.get("id"),
     }
 
 
@@ -666,8 +696,9 @@ def new_meal():
     if request.method == "POST":
         v = form_values()
         cur = db().execute(
-            "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating) "
-            "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating)", v)
+            "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating, "
+            "cookbook_book_id, cookbook_recipe_id) VALUES (:day, :name, :source_type, :source_title, "
+            ":source_detail, :notes, :rating, :cookbook_book_id, :cookbook_recipe_id)", v)
         skipped = save_photos(cur.lastrowid, request.files.getlist("photos"))
         db().commit()
         return redirect(url_for("meal_detail", meal_id=cur.lastrowid, skipped=skipped or None))
@@ -702,7 +733,8 @@ def edit_meal(meal_id):
         db().execute(
             "UPDATE meals SET day=:day, name=:name, source_type=:source_type, "
             "source_title=:source_title, source_detail=:source_detail, notes=:notes, "
-            "rating=:rating WHERE id=:id", v)
+            "rating=:rating, cookbook_book_id=:cookbook_book_id, cookbook_recipe_id=:cookbook_recipe_id "
+            "WHERE id=:id", v)
         drop = [int(x) for x in request.form.getlist("delete_photo") if x.isdigit()]
         names = []
         if drop:
@@ -736,6 +768,37 @@ def photo(filename):
     resp = send_from_directory(PHOTO_DIR, filename)
     resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return resp
+
+
+HISTORY_VERSION = 1
+HISTORY_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_detail", "rating",
+                  "cookbook_book_id", "cookbook_recipe_id")
+
+
+def history_rows(con):
+    """Meals Cookbook Collection can match to its catalog: from a cookbook or website, with a link, or
+    stamped with its ids. Restaurant and home-recipe dinners without a link are never sent."""
+    return [dict(zip(HISTORY_FIELDS, r)) for r in con.execute(
+        f"SELECT {', '.join(HISTORY_FIELDS)} FROM meals "
+        "WHERE source_type IN ('cookbook', 'online') OR source_detail LIKE '%://%' OR source_title LIKE '%://%' "
+        "OR cookbook_book_id IS NOT NULL OR cookbook_recipe_id IS NOT NULL ORDER BY id")]
+
+
+@app.route("/api/history")
+def history():
+    """Read-only cooking history for Cookbook Collection, behind HISTORY_TOKEN. The whole list every time,
+    with an ETag so an unchanged history costs a 304."""
+    if not HISTORY_TOKEN:
+        abort(404)
+    auth = request.headers.get("Authorization", "")
+    if auth[:7].lower() != "bearer " or not hmac.compare_digest(auth[7:].strip().encode(), HISTORY_TOKEN.encode()):
+        return {"error": "unauthorized"}, 401
+    body = json.dumps({"version": HISTORY_VERSION, "meals": history_rows(db())}, separators=(",", ":")).encode()
+    etag = '"' + hashlib.sha256(body).hexdigest() + '"'
+    headers = {"ETag": etag, "Cache-Control": "private, no-store"}
+    if request.headers.get("If-None-Match") == etag:
+        return "", 304, headers
+    return body, 200, {**headers, "Content-Type": "application/json"}
 
 
 @app.route("/sw.js")

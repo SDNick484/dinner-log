@@ -2,6 +2,8 @@
 {% block title %}{{ 'Edit' if editing else 'New' }} dinner{% endblock %}
 {% block content %}
 <form method="post" enctype="multipart/form-data" class="form">
+  <input type="hidden" name="cookbook_book_id" id="cookbook-book-id" value="{{ meal['cookbook_book_id'] or '' }}">
+  <input type="hidden" name="cookbook_recipe_id" id="cookbook-recipe-id" value="{{ meal['cookbook_recipe_id'] or '' }}">
   <h1>{{ 'Edit dinner' if editing else 'Log a dinner' }}</h1>
 
   <label>Day
@@ -131,7 +133,16 @@
   const recipeInput = document.getElementById('recipe-input');
   const recipeLabel = document.getElementById('recipe-label');
   const recipeList = document.getElementById('book-recipes');
-  let recipes = new Map(), autoName = null, autoPage = null, loadedFor = null, seq = 0;
+  let recipes = new Map(), autoName = null, autoPage = null, loadedFor = null, loadedBookId = null, seq = 0;
+
+  // Cookbook Collection ids for the recipe this dinner came from (a pick, a link, or the picker below).
+  // Typing over the name, book or page, or switching the source, means it may be a different dish now:
+  // forget them, and Cookbook Collection falls back to matching by title and page.
+  const bookIdInput = document.getElementById('cookbook-book-id');
+  const recipeIdInput = document.getElementById('cookbook-recipe-id');
+  function clearIds() { bookIdInput.value = ''; recipeIdInput.value = ''; }
+  [nameInput, titleInput, detailInput].forEach(el => el.addEventListener('input', clearIds));
+  form.querySelectorAll('input[name=source_type]').forEach(r => r.addEventListener('change', clearIds));
 
   async function loadRecipes() {
     const isBook = form.querySelector('input[name=source_type]:checked').value === 'cookbook';
@@ -147,6 +158,7 @@
     } catch (e) { /* catalog unreachable: the form works as before */ }
     if (mine !== seq) return;  // a newer title was typed meanwhile
     loadedFor = title;
+    loadedBookId = data.book_id || null;
     recipes = new Map();
     recipeList.replaceChildren(...data.recipes.filter(r => !recipes.has(r.name) && recipes.set(r.name, r))
       .map(r => { const o = document.createElement('option'); o.value = r.name; if (r.page) o.label = 'p. ' + r.page; return o; }));
@@ -161,6 +173,7 @@
     if (!r) return;
     if (!nameInput.value.trim() || nameInput.value === autoName) nameInput.value = autoName = r.name;
     if (r.page && (!detailInput.value.trim() || detailInput.value === autoPage)) detailInput.value = autoPage = r.page;
+    if (r.id && loadedBookId) { bookIdInput.value = loadedBookId; recipeIdInput.value = r.id; }
   }
 
   let titleTimer;
