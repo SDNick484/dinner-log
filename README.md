@@ -45,7 +45,7 @@ Environment variables (see `.env.example`):
 | `COOKBOOK_URL` | (unset)    | Base URL of a Cookbook Collection instance, e.g. `https://cookbooks.example.com`; enables catalog autocomplete and links. A bare host gets `https://` added (`http://` for localhost and private addresses) |
 | `COOKBOOK_API_URL` | `COOKBOOK_URL` | Address this server uses to call Cookbook Collection. Set it to the private one (e.g. `http://127.0.0.1:8767`) when both run on one host |
 | `COOKBOOK_TOKEN` | (unset) | Cookbook Collection's `READ_TOKEN`; lets "Pick for tonight" draw on its recipes |
-| `HISTORY_TOKEN` | (unset) | Lets Cookbook Collection read cooking history from `/api/history` (see *Linking the two apps*). Unset, the endpoint doesn't exist |
+| `HISTORY_TOKEN` | (unset; the Alpine installer generates one) | Lets Cookbook Collection read cooking history from `/api/history` (see *Linking the two apps*). Unset, the endpoint doesn't exist |
 | `TRUSTED_ORIGINS` | (unset) | Extra comma-separated origins allowed to POST (see Security). Rarely needed. |
 
 Use a single gunicorn worker; SQLite is happiest that way and one worker is plenty for a household.
@@ -105,19 +105,16 @@ Under Docker, `127.0.0.1` is the container itself; use the host's address (or `h
 
 Cookbook Collection shows how often you've cooked each recipe and what you rated it. It reads that from Dinner Log's `GET /api/history`, a read-only list of the dinners it can match to its catalog: ones from a cookbook or website, or with a link. Restaurant and home-recipe dinners without a link are never sent.
 
-The endpoint exists only when `HISTORY_TOKEN` is set, and every request must send it as `Authorization: Bearer <token>`. Use the same value for Cookbook Collection's `DINNERLOG_TOKEN`:
+The endpoint exists only when `HISTORY_TOKEN` is set, and every request must send it as `Authorization: Bearer <token>`. Cookbook Collection's `DINNERLOG_TOKEN` must hold the same value.
 
-```sh
-openssl rand -hex 32
-# /etc/conf.d/dinner-log (Alpine) or .env (Docker)
-export HISTORY_TOKEN=<that value>
-```
+- **Alpine installer:** if `/etc/conf.d/dinner-log` has no `HISTORY_TOKEN` (or an empty one), the installer generates one; a token you've set is never replaced. Copy it to Cookbook Collection: `grep HISTORY_TOKEN /etc/conf.d/dinner-log`.
+- **Docker:** set it yourself in `.env`, e.g. from `openssl rand -hex 32`.
 
 Point Cookbook Collection at Dinner Log's **private** address (e.g. `http://127.0.0.1:8000` on the same host). The token travels in plain HTTP there, so keep it on loopback or a private network, or use https. Through the public address, the login in front of the site turns the request away anyway.
 
 Dinners logged from Cookbook Collection (**Log tonight** on a catalog pick, the 🍽 link on a recipe, or the form's **Recipe from this book** picker) remember the catalog's book and recipe ids in two columns, `cookbook_book_id` and `cookbook_recipe_id`, so Cookbook Collection doesn't have to guess from the title and page. Typing over the name, cookbook or page afterwards clears them. Older dinners have no ids and are matched by title and page as before.
 
-Upgrading: deploy Dinner Log first and set `HISTORY_TOKEN`, then upgrade Cookbook Collection and give it the URL and token. The new columns are added on start; existing dinners aren't changed.
+Upgrading: deploy Dinner Log first (the Alpine installer fills in `HISTORY_TOKEN` if it's empty), then upgrade Cookbook Collection and give it the URL and token. The new columns are added on start; existing dinners aren't changed.
 
 ## Security: read this before exposing it
 
