@@ -50,3 +50,20 @@ def test_header_runs_the_alpine_installer(built):
     assert head.startswith("#!/bin/sh")
     assert 'sh "$TMP/dinner-log/deploy/install-alpine.sh"' in head
     assert "trap" in head and "exit 0" in head
+
+
+def test_header_unpacks_and_runs_from_any_cwd(built, tmp_path):
+    """Run the real header with the install step swapped for a probe, from another folder, by relative path."""
+    probe = tmp_path / "probe" / "setup.sh"
+    probe.parent.mkdir()
+    text = built.read_text().replace('sh "$TMP/dinner-log/deploy/install-alpine.sh"',
+                                     'echo "TMP=$TMP"; ls "$TMP/dinner-log"; test -f "$TMP/dinner-log/deploy/install-alpine.sh"', 1)
+    assert text != built.read_text()
+    probe.write_text(text)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    r = subprocess.run(["sh", "../probe/setup.sh"], cwd=elsewhere, capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    tmp = r.stdout.split("TMP=", 1)[1].split("\n", 1)[0]
+    assert set(r.stdout.split("\n", 1)[1].split()) == {"app.py", "templates", "static", "deploy"}
+    assert not os.path.exists(tmp)                                       # cleaned up on exit

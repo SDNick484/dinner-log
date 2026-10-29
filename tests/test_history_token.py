@@ -81,3 +81,33 @@ def test_installer_calls_it():
     src = open(os.path.join(ROOT, "deploy", "install-alpine.sh")).read()
     assert 'sh "$SRC/deploy/history-token.sh" "$CONF"' in src
     assert 'set_conf "export HISTORY_TOKEN"' not in src
+
+
+def test_conf_without_trailing_newline_stays_valid(tmp_path):
+    conf = tmp_path / "dinner-log"
+    conf.write_text("export COOKBOOK_TOKEN=abc")                          # hand-edited, no final newline
+    run(conf)
+    lines = conf.read_text().splitlines()
+    assert lines[0] == "export COOKBOOK_TOKEN=abc" and lines[1] == COMMENT
+    written_token(conf)
+    assert subprocess.run(["sh", "-n", str(conf)]).returncode == 0
+
+
+@pytest.mark.parametrize("existing", ["  export HISTORY_TOKEN=mine", "\texport HISTORY_TOKEN=mine",
+                                      "   HISTORY_TOKEN=mine"])
+def test_indented_token_is_kept(tmp_path, existing):
+    conf = tmp_path / "dinner-log"
+    conf.write_text(existing + "\n")
+    assert "kept" in run(conf)
+    assert conf.read_text() == existing + "\n"
+
+
+def test_indented_empty_token_is_filled_in_place(tmp_path):
+    conf = tmp_path / "dinner-log"
+    conf.write_text("  export HISTORY_TOKEN=\n")
+    assert "generated" in run(conf)
+    assert len(token_lines_any(conf)) == 1
+
+
+def token_lines_any(conf):
+    return [l for l in conf.read_text().splitlines() if re.match(r"^\s*(export )?HISTORY_TOKEN=", l)]
