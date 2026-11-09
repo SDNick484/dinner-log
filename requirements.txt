@@ -2,3 +2,4 @@ flask>=3.0
 pillow>=10.0
 gunicorn>=22.0
 tzdata>=2024.1  # zoneinfo fallback where the OS has no zone database
+pyjwt[crypto]>=2.8  # verifies Cloudflare Access sign-ins when CF_TEAM_DOMAIN / CF_AUD are set
