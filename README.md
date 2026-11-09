@@ -112,9 +112,42 @@ The endpoint exists only when `HISTORY_TOKEN` is set, and every request must sen
 
 Point Cookbook Collection at Dinner Log's **private** address (e.g. `http://127.0.0.1:8000` on the same host). The token travels in plain HTTP there, so keep it on loopback or a private network, or use https. Through the public address, the login in front of the site turns the request away anyway.
 
-Dinners logged from Cookbook Collection (**Log tonight** on a catalog pick, the 🍽 link on a recipe, or the form's **Recipe from this book** picker) remember the catalog's book and recipe ids in two columns, `cookbook_book_id` and `cookbook_recipe_id`, so Cookbook Collection doesn't have to guess from the title and page. Typing over the name, cookbook or page afterwards clears them. Older dinners have no ids and are matched by title and page as before.
+Dinners logged from Cookbook Collection (**Log tonight** on a catalog pick, the 🍽 link on a recipe, or the form's **Recipe from this book** picker) remember which book and recipe they came from, so Cookbook Collection doesn't have to guess from the title and page:
 
-Upgrading: deploy Dinner Log first (the Alpine installer fills in `HISTORY_TOKEN` if it's empty), then upgrade Cookbook Collection and give it the URL and token. The new columns are added on start; existing dinners aren't changed.
+| Column | Holds |
+|---|---|
+| `cookbook_book_uid`, `cookbook_recipe_uid` | the catalog's stable uids (32 hex characters). Cookbook Collection trusts these first |
+| `cookbook_book_id`, `cookbook_recipe_id` | its integer ids. Kept for catalogs older than uids; an id can be reused after the catalog deletes a row, so it's only used when no uid was sent |
+
+Typing over the name, cookbook or page afterwards clears all four. Older dinners have none and are matched by title and page as before. `/api/history` sends all four; the fields are additive, so it's still version 1.
+
+Upgrading: deploy Dinner Log first (the Alpine installer fills in `HISTORY_TOKEN` if it's empty), then upgrade Cookbook Collection and give it the URL and token. Either order works: each side ignores fields the other doesn't send yet. New columns are added on start and existing dinners aren't changed.
+
+### Backfilling uids on older dinners
+
+Dinners logged before uids existed have only the integer ids. `backfill_uids` resolves them once through the catalog's public `GET /api/books/<id>` and stamps the uids, but only where the catalog still agrees with the dinner: the book's title must match the dinner's cookbook, and the recipe's page or name must match the dinner's. A mismatch (the id now belongs to another book or recipe) is reported and left alone. Run it after upgrading Cookbook Collection, dry run first:
+
+```sh
+# Alpine (the config file is root-only; exported variables carry DATA_DIR and COOKBOOK_API_URL)
+( . /etc/conf.d/dinner-log && cd /opt/dinner-log && python3 -m backfill_uids --dry-run )
+( . /etc/conf.d/dinner-log && cd /opt/dinner-log && python3 -m backfill_uids )
+
+# Docker
+docker compose exec -u dinnerlog dinner-log python -m backfill_uids --dry-run
+
+# A checkout
+DATA_DIR=./data COOKBOOK_API_URL=http://127.0.0.1:8767 python3 -m backfill_uids --dry-run
+```
+
+It prints one line per dinner it looked at and a total, e.g.
+
+```
+meal    12  2026-10-01  'Roast chicken': would set book_uid=4f1c…, recipe_uid=9a0e…  [ok]
+meal    31  2026-10-04  'Braised leeks': would set book_uid=4f1c…  [conflict (recipe left NULL): recipe 3 is now 'Polenta' p. 210]
+88 meals checked: would set 85 book uids and 79 recipe uids; 2 conflicts, 1 meals left unchanged (dry run: nothing written)
+```
+
+It never replaces a uid that's already set, so running it again is harmless. If the catalog doesn't answer, it writes nothing and exits 1. Website recipes aren't in the public catalog, so those dinners keep their ints; Cookbook Collection still matches them by link.
 
 ## Security: read this before exposing it
 
