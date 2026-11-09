@@ -1,6 +1,7 @@
 import io
 import os
 
+import pytest
 from PIL import Image
 
 from test_app import load_app, text
@@ -84,3 +85,61 @@ def test_removed_photo_files_are_deleted_only_after_commit(tmp_path, monkeypatch
     c.post("/meal/1/edit", data={"name": "Pie", "delete_photo": str(pid)})
     assert states == [False]                          # DB change committed before files go
     assert saved_photos(tmp_path) == []
+
+
+# ---- decoder allow-list: JPEG, PNG, WebP and (when pillow-heif is installed) HEIC only
+
+def image_bytes(fmt, size=(64, 48), **kw):
+    buf = io.BytesIO()
+    Image.new("RGB", size, "blue").save(buf, fmt, **kw)
+    buf.seek(0)
+    return buf
+
+
+def upload(tmp_path, buf, filename):
+    a = load_app(tmp_path)
+    resp = a.app.test_client().post("/new", data={"name": "X", "photos": (buf, filename)}, follow_redirects=True)
+    return text(resp)
+
+
+def test_png_and_webp_are_accepted(tmp_path):
+    for fmt, name in (("PNG", "a.png"), ("WEBP", "a.webp")):
+        d = tmp_path / fmt
+        d.mkdir()
+        assert "skipped" not in upload(d, image_bytes(fmt), name)
+        assert len(saved_photos(d)) == 1
+
+
+def test_bmp_and_tiff_are_refused_not_decoded(tmp_path):
+    for fmt, name in (("BMP", "a.bmp"), ("TIFF", "a.tif"), ("GIF", "a.gif")):
+        d = tmp_path / fmt
+        d.mkdir()
+        assert "1 photo couldn" in upload(d, image_bytes(fmt), name)
+        assert saved_photos(d) == []
+
+
+def test_open_image_only_offers_the_allow_list(tmp_path):
+    a = load_app(tmp_path)
+    assert set(a.image_formats()) <= {"JPEG", "PNG", "WEBP", "HEIF"}
+    assert {"JPEG", "PNG"} <= set(a.image_formats())
+    with pytest.raises(ValueError):
+        a.open_image(image_bytes("BMP"))
+
+
+def test_mpo_jpeg_gets_the_draft_decode(tmp_path, monkeypatch):
+    # Many Android cameras write JPEGs with a multi-picture index; Pillow reports those as MPO, which
+    # must still be draft-decoded or a 50 MP photo is decoded at full size.
+    from PIL import JpegImagePlugin
+    first = Image.new("RGB", (4000, 3000), "red")
+    buf = io.BytesIO()
+    first.save(buf, "MPO", save_all=True, append_images=[Image.new("RGB", (4000, 3000), "green")])
+    buf.seek(0)
+    assert Image.open(buf).format == "MPO"
+    buf.seek(0)
+    calls = []
+    real = JpegImagePlugin.JpegImageFile.draft
+    monkeypatch.setattr(JpegImagePlugin.JpegImageFile, "draft",
+                        lambda self, *a, **k: calls.append(a) or real(self, *a, **k))
+    assert "skipped" not in upload(tmp_path, buf, "mpo.jpg")
+    assert calls, "draft() was not called for an MPO image"
+    assert len(saved_photos(tmp_path)) == 1
