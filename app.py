@@ -67,7 +67,9 @@ CREATE TABLE IF NOT EXISTS meals (
     rating INTEGER CHECK (rating BETWEEN 1 AND 10),  -- NULL = not rated
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     cookbook_book_id INTEGER,                -- Cookbook Collection books.id, when picked from its catalog
-    cookbook_recipe_id INTEGER               -- Cookbook Collection recipes.id
+    cookbook_recipe_id INTEGER,              -- Cookbook Collection recipes.id
+    cookbook_book_uid TEXT,                  -- Cookbook Collection books.uid (stable; ids can be reused)
+    cookbook_recipe_uid TEXT                 -- Cookbook Collection recipes.uid
 );
 CREATE TABLE IF NOT EXISTS photos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,6 +142,10 @@ with sqlite3.connect(DB_PATH) as _c:
     for _col in ("cookbook_book_id", "cookbook_recipe_id"):
         if _col not in _cols:
             _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} INTEGER")
+    # ...and before they carried its stable uids. Existing rows get NULL; backfill_uids fills them.
+    for _col in ("cookbook_book_uid", "cookbook_recipe_uid"):
+        if _col not in _cols:
+            _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} TEXT")
 
 
 def save_photos(meal_id, files):
@@ -193,6 +199,15 @@ def parse_cookbook_id(raw):
     return n if 0 < n <= SQLITE_INT_MAX else None
 
 
+UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def parse_cookbook_uid(raw):
+    """A Cookbook Collection uid (32 lowercase hex characters), else None."""
+    raw = str(raw if raw is not None else "").strip().lower()
+    return raw if UID_RE.fullmatch(raw) else None
+
+
 def parse_meal_params(params, default_source="cookbook"):
     if "source_type" in params:
         stype = str(params.get("source_type") or "")
@@ -218,6 +233,8 @@ def parse_meal_params(params, default_source="cookbook"):
         # Only meals from Cookbook Collection's catalog keep its ids.
         "cookbook_book_id": parse_cookbook_id(params.get("cookbook_book_id")) if stype in CATALOG_SOURCES else None,
         "cookbook_recipe_id": parse_cookbook_id(params.get("cookbook_recipe_id")) if stype in CATALOG_SOURCES else None,
+        "cookbook_book_uid": parse_cookbook_uid(params.get("cookbook_book_uid")) if stype in CATALOG_SOURCES else None,
+        "cookbook_recipe_uid": parse_cookbook_uid(params.get("cookbook_recipe_uid")) if stype in CATALOG_SOURCES else None,
     }
 
 
@@ -252,7 +269,7 @@ COOKBOOK_TOKEN = os.environ.get("COOKBOOK_TOKEN", "").strip()  # Cookbook Collec
 # Lets Cookbook Collection read cooking history from /api/history. Unset: the route doesn't exist.
 HISTORY_TOKEN = os.environ.get("HISTORY_TOKEN", "").strip()
 _cookbook_cache = {"cached_at": 0, "titles": [], "ids": {}}
-_recipe_cache = {}  # book id -> (fetched_at, [{"name", "page"}])
+_recipe_cache = {}  # book id -> (fetched_at, catalog title, [{"id", "uid", "name", "page"}], book uid)
 RECIPE_TTL = 120
 
 
@@ -310,38 +327,49 @@ def title_key(title):
     return " ".join(words)
 
 
-def cookbook_recipes(title, timeout=2.0):
-    """(catalog title, catalog book id, [{"id", "name", "page"}]) for a cookbook in Cookbook Collection's
-    index, or (None, None, []) when it isn't there, isn't indexed, or the catalog doesn't answer.
-    Uses the public API only."""
+_NO_BOOK = {"book": None, "book_id": None, "book_uid": None, "recipes": []}
+
+
+def cookbook_book(title, timeout=2.0):
+    """{"book", "book_id", "book_uid", "recipes": [{"id", "uid", "name", "page"}]} for a cookbook in Cookbook
+    Collection's index, or all-empty when it isn't there, isn't indexed, or the catalog doesn't answer.
+    Uses the public API only. The uids are None from a Cookbook Collection older than them."""
     fetch_cookbook_titles()
     key = title_key(title)
     book_id = _cookbook_cache["ids"].get(key) if key else None
     if book_id is None:
-        return None, None, []
+        return dict(_NO_BOOK)
     now = time.time()
     hit = _recipe_cache.get(book_id)
     if hit and now - hit[0] < RECIPE_TTL:
-        return hit[1], book_id, hit[2]
+        return {"book": hit[1], "book_id": book_id, "book_uid": hit[3], "recipes": hit[2]}
     req_url = f"{COOKBOOK_API_URL}/api/books/{book_id}"
     try:
         with urllib.request.urlopen(req_url, timeout=timeout) as resp:
             book = json.loads(resp.read().decode("utf-8"))
-        recipes = [{"id": r.get("id"), "name": r["name"].strip(), "page": (r.get("page") or "").strip()}
+        recipes = [{"id": r.get("id"), "uid": parse_cookbook_uid(r.get("uid")), "name": r["name"].strip(),
+                    "page": (r.get("page") or "").strip()}
                    for r in book.get("recipes", []) if (r.get("name") or "").strip()]
-        _recipe_cache[book_id] = (now, book.get("title") or title, recipes)
-        return book.get("title") or title, book_id, recipes
+        hit = (now, book.get("title") or title, recipes, parse_cookbook_uid(book.get("uid")))
+        _recipe_cache[book_id] = hit
     except Exception as exc:
         app.logger.warning("Failed to fetch recipes from Cookbook Collection (%s): %s", req_url, exc)
-        return (hit[1], book_id, hit[2]) if hit else (None, None, [])
+        if not hit:
+            return dict(_NO_BOOK)
+    return {"book": hit[1], "book_id": book_id, "book_uid": hit[3], "recipes": hit[2]}
+
+
+def cookbook_recipes(title, timeout=2.0):
+    """(catalog title, catalog book id, recipes): cookbook_book() as a tuple, (None, None, []) when not found."""
+    b = cookbook_book(title, timeout)
+    return b["book"], b["book_id"], b["recipes"]
 
 
 @app.route("/cookbook/recipes")
 def cookbook_recipes_route():
     """The form's recipe picker: recipes indexed for the cookbook typed in "Cookbook".
     Same-origin, so the browser never talks to Cookbook Collection directly."""
-    book, book_id, recipes = cookbook_recipes(request.args.get("title", "")[:200])
-    return {"book": book, "book_id": book_id, "recipes": recipes}
+    return cookbook_book(request.args.get("title", "")[:200])
 
 
 def titles_for(source_type):
@@ -548,6 +576,8 @@ def catalog_dish(r, today):
         "from_catalog": True,
         "cookbook_book_id": r.get("book_id"),
         "cookbook_recipe_id": r.get("id"),
+        "cookbook_book_uid": parse_cookbook_uid(r.get("book_uid")),
+        "cookbook_recipe_uid": parse_cookbook_uid(r.get("uid")),
     }
 
 
@@ -697,8 +727,9 @@ def new_meal():
         v = form_values()
         cur = db().execute(
             "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating, "
-            "cookbook_book_id, cookbook_recipe_id) VALUES (:day, :name, :source_type, :source_title, "
-            ":source_detail, :notes, :rating, :cookbook_book_id, :cookbook_recipe_id)", v)
+            "cookbook_book_id, cookbook_recipe_id, cookbook_book_uid, cookbook_recipe_uid) "
+            "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating, "
+            ":cookbook_book_id, :cookbook_recipe_id, :cookbook_book_uid, :cookbook_recipe_uid)", v)
         skipped = save_photos(cur.lastrowid, request.files.getlist("photos"))
         db().commit()
         return redirect(url_for("meal_detail", meal_id=cur.lastrowid, skipped=skipped or None))
@@ -733,8 +764,8 @@ def edit_meal(meal_id):
         db().execute(
             "UPDATE meals SET day=:day, name=:name, source_type=:source_type, "
             "source_title=:source_title, source_detail=:source_detail, notes=:notes, "
-            "rating=:rating, cookbook_book_id=:cookbook_book_id, cookbook_recipe_id=:cookbook_recipe_id "
-            "WHERE id=:id", v)
+            "rating=:rating, cookbook_book_id=:cookbook_book_id, cookbook_recipe_id=:cookbook_recipe_id, "
+            "cookbook_book_uid=:cookbook_book_uid, cookbook_recipe_uid=:cookbook_recipe_uid WHERE id=:id", v)
         drop = [int(x) for x in request.form.getlist("delete_photo") if x.isdigit()]
         names = []
         if drop:
@@ -771,8 +802,10 @@ def photo(filename):
 
 
 HISTORY_VERSION = 1
+# Version 1 grew the two uid fields without a bump: they are additive, and Cookbook Collection releases from
+# before them accept only version 1 and ignore keys they don't know. Bump only for a breaking change.
 HISTORY_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_detail", "rating",
-                  "cookbook_book_id", "cookbook_recipe_id")
+                  "cookbook_book_id", "cookbook_recipe_id", "cookbook_book_uid", "cookbook_recipe_uid")
 
 
 def history_rows(con):
@@ -781,7 +814,8 @@ def history_rows(con):
     return [dict(zip(HISTORY_FIELDS, r)) for r in con.execute(
         f"SELECT {', '.join(HISTORY_FIELDS)} FROM meals "
         "WHERE source_type IN ('cookbook', 'online') OR source_detail LIKE '%://%' OR source_title LIKE '%://%' "
-        "OR cookbook_book_id IS NOT NULL OR cookbook_recipe_id IS NOT NULL ORDER BY id")]
+        "OR cookbook_book_id IS NOT NULL OR cookbook_recipe_id IS NOT NULL "
+        "OR cookbook_book_uid IS NOT NULL OR cookbook_recipe_uid IS NOT NULL ORDER BY id")]
 
 
 @app.route("/api/history")

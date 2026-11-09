@@ -30,8 +30,8 @@ adduser -S -D -H -G dinnerlog -h "$DATA_DIR" -s /sbin/nologin dinnerlog 2>/dev/n
 mkdir -p "$APP_DIR" "$DATA_DIR"
 
 echo "==> Copying app to $APP_DIR"
-rm -rf "$APP_DIR/app.py" "$APP_DIR/templates" "$APP_DIR/static"
-cp -r "$SRC/app.py" "$SRC/templates" "$SRC/static" "$APP_DIR/"
+rm -rf "$APP_DIR/app.py" "$APP_DIR/backfill_uids.py" "$APP_DIR/templates" "$APP_DIR/static"
+cp -r "$SRC/app.py" "$SRC/backfill_uids.py" "$SRC/templates" "$SRC/static" "$APP_DIR/"
 chown -R root:root "$APP_DIR"
 chown -R dinnerlog:dinnerlog "$DATA_DIR"
 chmod 750 "$DATA_DIR"

@@ -46,8 +46,8 @@ def test_recipes_for_an_indexed_book(tmp_path, monkeypatch):
     catalog(monkeypatch, a, {"/api/books": BOOKS, "/api/books/7": ZUNI}, calls)
     book, book_id, recipes = a.cookbook_recipes("the zuni cafe cookbook")
     assert book == "The Zuni Café Cookbook" and book_id == 7
-    assert recipes == [{"id": 1, "name": "Zuni Roast Chicken with Bread Salad", "page": "342"},
-                       {"id": 2, "name": "Zuni Caesar Salad", "page": ""}]          # blank names dropped
+    assert recipes == [{"id": 1, "uid": None, "name": "Zuni Roast Chicken with Bread Salad", "page": "342"},
+                       {"id": 2, "uid": None, "name": "Zuni Caesar Salad", "page": ""}]  # blank names dropped
     a.cookbook_recipes("The Zuni Café Cookbook")
     assert calls.count("http://127.0.0.1:8767/api/books/7") == 1             # cached
 
@@ -67,7 +67,8 @@ def test_route_and_form(tmp_path, monkeypatch):
     r = c.get("/cookbook/recipes?title=Zuni%20Cafe%20Cookbook").get_json()
     assert r["book"] == "The Zuni Café Cookbook" and len(r["recipes"]) == 2
     assert r["book_id"] == 7 and r["recipes"][0]["id"] == 1
-    assert c.get("/cookbook/recipes?title=").get_json() == {"book": None, "book_id": None, "recipes": []}
+    assert c.get("/cookbook/recipes?title=").get_json() == {"book": None, "book_id": None, "book_uid": None,
+                                                             "recipes": []}
     page = c.get("/new").get_data(as_text=True)
     assert 'id="recipe-input"' in page and "/cookbook/recipes" in page
 
@@ -75,4 +76,5 @@ def test_route_and_form(tmp_path, monkeypatch):
 def test_route_without_catalog(tmp_path, monkeypatch):
     a = load_app(tmp_path)
     monkeypatch.setattr(a, "COOKBOOK_API_URL", "")
-    assert a.app.test_client().get("/cookbook/recipes?title=Dining%20In").get_json() == {"book": None, "book_id": None, "recipes": []}
+    assert a.app.test_client().get("/cookbook/recipes?title=Dining%20In").get_json() == \
+        {"book": None, "book_id": None, "book_uid": None, "recipes": []}

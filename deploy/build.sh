@@ -13,7 +13,7 @@ OUT=${OUT:-dist/setup-dinner-log.sh}
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$(dirname "$OUT")" "$STAGE/dinner-log"
-cp -r app.py templates static deploy "$STAGE/dinner-log/"
+cp -r app.py backfill_uids.py templates static deploy "$STAGE/dinner-log/"
 find "$STAGE" \( -name __pycache__ -o -name '*.pyc' \) -prune -exec rm -rf {} +
 {
   cat <<'HEAD'

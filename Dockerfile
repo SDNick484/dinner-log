@@ -7,7 +7,7 @@ RUN apk add --no-cache su-exec \
  && adduser -S -D -H -u 10001 -G dinnerlog dinnerlog
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py ./
+COPY app.py backfill_uids.py ./
 COPY templates ./templates
 COPY static ./static
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
