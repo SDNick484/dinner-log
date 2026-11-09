@@ -22,7 +22,7 @@ README.md is the user-facing guide; this file is how to work on the code. Its si
 ## Commands
 ```sh
 python -m pytest -q                                  # full suite, ~6 s
-sh deploy/build.sh                                   # -> dist/setup-dinner-log.sh (OUT=<path> to move it)
+sh deploy/build.sh                                   # -> dist/setup-dinner-log.sh (OUT=<path> to move it); needs python3
 DATA_DIR=$(mktemp -d) python app.py                  # dev server on :8000
 docker compose up --build                            # reads .env (copy .env.example)
 ```

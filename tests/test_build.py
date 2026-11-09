@@ -10,8 +10,8 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-pytestmark = pytest.mark.skipif(not all(shutil.which(t) for t in ("sh", "tar", "base64")),
-                                reason="needs sh, tar and base64")
+pytestmark = pytest.mark.skipif(not all(shutil.which(t) for t in ("sh", "tar", "base64", "python3")),
+                                reason="needs sh, tar, base64 and python3")
 
 
 @pytest.fixture(scope="module")
@@ -43,7 +43,24 @@ def test_payload_is_the_app_only(built):
     assert "dinner-log/deploy/install-alpine.sh" in names
     assert "dinner-log/deploy/dinner-log-backup" in names
     assert not any("__pycache__" in n or n.endswith(".pyc") or "/data/" in n for n in names)
-    assert all(m.uid == 0 and m.gid == 0 for m in tar.getmembers())
+    assert all(m.uid == 0 and m.gid == 0 and m.uname == m.gname == "root" for m in tar.getmembers())
+
+
+@pytest.mark.parametrize("broken", ["python3", "base64", "tar"])
+def test_a_failure_making_the_payload_fails_the_build(tmp_path, broken):
+    """busybox tar once failed on a GNU-only option inside `tar | base64`; set -e can't see that, so the build
+    said "Built" over an installer with an empty payload. Each tool failing must fail the build, and no
+    installer may be left behind."""
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / broken).write_text("#!/bin/sh\necho \"$0: broken for this test\" >&2\nexit 1\n")
+    (fake / broken).chmod(0o755)
+    out = tmp_path / "dist" / "setup-dinner-log.sh"
+    r = subprocess.run(["sh", os.path.join(ROOT, "deploy", "build.sh")], capture_output=True, text=True,
+                       env={**os.environ, "OUT": str(out), "PATH": f"{fake}{os.pathsep}{os.environ['PATH']}"})
+    assert r.returncode != 0
+    assert "Built" not in r.stdout
+    assert not out.exists()
 
 
 def test_header_runs_the_alpine_installer(built):
