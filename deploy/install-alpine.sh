@@ -23,7 +23,7 @@ DATA_DIR=/var/lib/dinner-log
 CONF=/etc/conf.d/dinner-log
 
 echo "==> Installing packages"
-apk add --no-cache python3 py3-flask py3-pillow py3-gunicorn tzdata su-exec >/dev/null
+apk add --no-cache python3 py3-flask py3-pillow py3-gunicorn py3-jwt py3-cryptography tzdata su-exec >/dev/null
 GUNICORN="$(command -v gunicorn)"
 
 echo "==> Creating user and directories"
@@ -67,6 +67,11 @@ set_conf "export COOKBOOK_TOKEN" "" "Cookbook Collection's READ_TOKEN, for Pick 
 set_conf "export BACKUP_DIR" "" "Where nightly database snapshots go" /var/backups/dinner-log
 set_conf "export BACKUP_KEEP_DAYS" "" "Days of nightly snapshots to keep" 14
 set_conf "export BACKUP_TARGET" "" "Optional folder on other storage (e.g. an NFS mount) that also gets snapshots and photos" ""
+set_conf "export CF_TEAM_DOMAIN" "" "Cloudflare Access team domain, e.g. yourteam.cloudflareaccess.com (with CF_AUD: verify sign-ins)" ""
+set_conf "export CF_AUD" "" "AUD tag of the Access application in front of Dinner Log (set both or neither)" ""
+set_conf "export LAN_ACCESS" "" "1 = with Access verification on, also let in direct requests from the local network" 0
+set_conf "export LAN_CIDRS" "" "Networks LAN_ACCESS allows (empty = loopback + private ranges)" ""
+set_conf "export LAN_HOSTS" "" "Host names LAN_ACCESS accepts besides IP addresses, e.g. dinners.lan" ""
 sh "$SRC/deploy/history-token.sh" "$CONF"  # made once if missing or empty; never replaced
 chmod 600 "$CONF"  # holds COOKBOOK_TOKEN and HISTORY_TOKEN; OpenRC reads it as root
 
@@ -124,7 +129,7 @@ PORT="${DINNER_PORT:-8000}"
 
 echo "==> Checking that it came up"
 i=0
-until wget -q -O /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; do
+until wget -q -O /dev/null "http://127.0.0.1:$PORT/healthz" 2>/dev/null; do
     i=$((i+1))
     if [ "$i" -ge 15 ]; then
         echo "Service did not respond. Last log lines:" >&2
