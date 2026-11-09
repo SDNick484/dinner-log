@@ -149,3 +149,35 @@ def test_another_dish_form_opens_on_that_day(a):
     with a.app.app_context():
         days = [r["day"] for r in a.db().execute("SELECT day FROM meals WHERE name='Side salad'")]
     assert days == ["2026-10-28"]
+
+
+def feed(mod, query=""):
+    return text(mod.app.test_client().get("/" + query))
+
+
+def test_same_day_dishes_share_one_date_label(a):
+    add_meal(a, day="2026-10-28", name="Roast Chicken")
+    add_meal(a, day="2026-10-28", name="Side Salad", source_type="original", title="", detail="")
+    add_meal(a, day="2026-10-27", name="Leftover Soup", source_type="original", title="", detail="")
+    page = feed(a)
+    assert page.count('<div class="day">') == 2                 # Wed Oct 28 once, Tue Oct 27 once
+    assert page.count('<div class="day">Wed Oct 28</div>') == 1
+    assert page.count('<li class="again">') == 1
+    # Newest-added first within a day: the salad is the dated card, the chicken sits under it.
+    assert page.index("Side Salad") < page.index("Roast Chicken") < page.index("Leftover Soup")
+    assert page.index('<li class="again">') < page.index("Roast Chicken")
+
+
+def test_every_card_keeps_its_date_when_days_differ(a):
+    add_meal(a, day="2026-10-28", name="Roast Chicken")
+    add_meal(a, day="2026-10-27", name="Leftover Soup")
+    page = feed(a)
+    assert page.count('<div class="day">') == 2 and 'class="again"' not in page
+
+
+def test_grouping_follows_what_the_filter_shows(a):
+    add_meal(a, day="2026-10-28", name="Roast Chicken")
+    add_meal(a, day="2026-10-28", name="Side Salad", source_type="original", title="", detail="")
+    add_meal(a, day="2026-10-28", name="Chicken Soup", source_type="original", title="", detail="")
+    page = feed(a, "?q=chicken")                                # two of the three dishes match
+    assert page.count('<div class="day">') == 1 and page.count('<li class="again">') == 1

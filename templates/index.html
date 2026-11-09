@@ -108,7 +108,7 @@
   </p>
 {% endif %}
 
-{% set ns = namespace(month='') %}
+{% set ns = namespace(month='', day='') %}
 <ul class="meals">
 {% for m in meals %}
   {% set ml = m.day | month_label %}
@@ -116,7 +116,10 @@
     {% set ns.month = ml %}
     <li class="month">{{ ml }}</li>
   {% endif %}
-  <li>
+  {# Dishes of one dinner (same day) sit together; only the first card carries the date. #}
+  {% set again = m.day == ns.day %}
+  {% set ns.day = m.day %}
+  <li{% if again %} class="again"{% endif %}>
     <a class="card" href="{{ url_for('meal_detail', meal_id=m.id) }}">
       {% if m.thumb %}
         <img src="{{ url_for('photo', filename=m.thumb) }}" alt="" loading="lazy">
@@ -124,7 +127,7 @@
         <div class="noimg">🍲</div>
       {% endif %}
       <div class="info">
-        <div class="day">{{ m.day | pretty_day }}</div>
+        {% if not again %}<div class="day">{{ m.day | pretty_day }}</div>{% endif %}
         <div class="name">{{ m.name }}</div>
         <div class="src">
           <span class="chip {{ m.source_type }}">{{ types[m.source_type] }}</span>
