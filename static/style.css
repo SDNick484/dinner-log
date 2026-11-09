@@ -85,6 +85,7 @@ legend { font-size: .85rem; color: var(--muted); font-weight: 600; padding: 0 6p
   color: var(--fg); font: inherit; font-weight: 600; text-decoration: none; cursor: pointer; }
 .btn.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); flex: 1; }
 .btn.danger { color: var(--danger); margin-top: 28px; }
+.btn.another { display: inline-block; margin-top: 20px; }
 
 .detail .src { margin: 8px 0; font-size: .95rem; }
 .notes { white-space: pre-wrap; background: var(--card); border: 1px solid var(--line);

@@ -53,6 +53,8 @@
   </div>
   {% endif %}
 
+  <a class="btn another" href="{{ url_for('new_meal', day=meal.day) }}">+ Another dish for this dinner</a>
+
   <form method="post" action="{{ url_for('delete_meal', meal_id=meal.id) }}"
         onsubmit="return confirm('Delete this dinner and its photos?');">
     <button class="btn danger" type="submit">Delete</button>

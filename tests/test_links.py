@@ -134,3 +134,18 @@ def test_pick_card_from_an_older_catalog_keeps_the_name_search(a, monkeypatch):
 def test_pick_card_ignores_a_malformed_uid_from_the_catalog(a, monkeypatch):
     page = pick_page(a, monkeypatch, id=53, uid="x", book_id=57, book_uid='"><script>')
     assert '"><script>' not in page and "#/uid/" not in page
+
+
+def test_detail_offers_another_dish_for_the_same_day(a):
+    page = detail(a, add_meal(a, day="2026-10-28"))
+    assert 'href="/new?day=2026-10-28"' in page and "+ Another dish for this dinner" in page
+
+
+def test_another_dish_form_opens_on_that_day(a):
+    c = a.app.test_client()
+    page = text(c.get("/new?day=2026-10-28"))
+    assert 'value="2026-10-28"' in page
+    c.post("/new", data={"name": "Side salad", "day": "2026-10-28"})
+    with a.app.app_context():
+        days = [r["day"] for r in a.db().execute("SELECT day FROM meals WHERE name='Side salad'")]
+    assert days == ["2026-10-28"]
