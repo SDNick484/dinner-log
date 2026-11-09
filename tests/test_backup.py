@@ -4,6 +4,7 @@ import datetime
 import gzip
 import importlib
 import os
+import shutil
 import sqlite3
 import stat
 import subprocess
@@ -212,3 +213,32 @@ def test_bad_keep_days_is_refused(data, tmp_path, raw):
     env = {**os.environ, "DATA_DIR": str(data), "BACKUP_DIR": str(tmp_path / "b"), "BACKUP_KEEP_DAYS": raw}
     r = subprocess.run([sys.executable, os.path.join(ROOT, "backup.py")], env=env, capture_output=True, text=True)
     assert r.returncode == 2 and "BACKUP_KEEP_DAYS" in r.stderr
+
+
+def test_cron_job_reads_the_config_and_runs_as_the_service_user(data, tmp_path):
+    """deploy/dinner-log-backup with su-exec stubbed (it needs root): it must source the config,
+    hand over the settings, and pass --skip-if for app-backup."""
+    if not shutil.which("sh"):
+        pytest.skip("needs sh")
+    script = os.path.join(ROOT, "deploy", "dinner-log-backup")
+    assert subprocess.run(["sh", "-n", script]).returncode == 0
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "su-exec").write_text('#!/bin/sh\necho "user=$1" > "$SU_LOG"; shift; exec "$@"\n')
+    (bin_dir / "su-exec").chmod(0o755)
+    (bin_dir / "python3").symlink_to(sys.executable)
+    conf = tmp_path / "dinner-log.conf"
+    out = tmp_path / "b"
+    conf.write_text(f"DINNER_PORT=8000\nexport DATA_DIR={data}\nexport BACKUP_DIR={out}\n"
+                    "export BACKUP_KEEP_DAYS=14\nexport BACKUP_TARGET=\n")
+    log = tmp_path / "backup.log"
+    env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "DINNER_CONF": str(conf), "DINNER_APP_DIR": ROOT,
+           "DINNER_BACKUP_LOG": str(log), "SU_LOG": str(tmp_path / "su.log")}
+    r = subprocess.run(["sh", script], env=env, capture_output=True, text=True)
+    assert r.returncode == 0, log.read_text() if log.exists() else r.stderr
+    assert (tmp_path / "su.log").read_text().strip() == "user=dinnerlog:dinnerlog"
+    (day,) = os.listdir(out)
+    assert (out / day / "meals.db.gz").exists()
+    assert "ok" in log.read_text() and r.stdout == ""
+    with open(script) as f:
+        assert "--skip-if /etc/periodic/daily/app-backup" in f.read()
