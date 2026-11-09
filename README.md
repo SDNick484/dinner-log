@@ -50,6 +50,11 @@ Environment variables (see `.env.example`):
 | `BACKUP_DIR` | `DATA_DIR/backups` (Alpine installer: `/var/backups/dinner-log`) | Where `backup.py` writes nightly database snapshots (see Backups) |
 | `BACKUP_KEEP_DAYS` | `14` | Days of snapshots to keep |
 | `BACKUP_TARGET` | (unset) | Folder on other storage, e.g. a NAS mount. Snapshots and photos are copied there too |
+| `CF_TEAM_DOMAIN` | (unset) | Cloudflare Access team domain, e.g. `yourteam.cloudflareaccess.com`. With `CF_AUD`, every request must carry a valid Access token (see *Verifying Cloudflare Access*). Set both or neither |
+| `CF_AUD` | (unset) | AUD tag of the Access application in front of Dinner Log |
+| `LAN_ACCESS` | `0` | `1` = with Access verification on, also let in direct requests from the local network |
+| `LAN_CIDRS` | loopback + private ranges | Comma-separated networks `LAN_ACCESS` allows, e.g. `192.168.1.0/24` |
+| `LAN_HOSTS` | (unset) | Host names `LAN_ACCESS` accepts besides IP addresses and `localhost`, e.g. `dinners.lan` |
 
 Use a single gunicorn worker; SQLite is happiest that way and one worker is plenty for a household.
 
@@ -210,7 +215,7 @@ It never replaces a uid that's already set, so running it again is harmless. If 
 
 ## Security: read this before exposing it
 
-**Dinner Log has no authentication.** Anyone who can reach the port can read, add, edit and delete entries. Run it on a trusted network, or put it behind something that handles login, for example:
+**Dinner Log has no login of its own.** Unless you turn on *Verifying Cloudflare Access* below, anyone who can reach the port can read, add, edit and delete entries. Run it on a trusted network, or put it behind something that handles login, for example:
 
 - a VPN such as WireGuard or Tailscale,
 - a reverse proxy with authentication (basic auth, OAuth proxy, etc.),
@@ -219,6 +224,31 @@ It never replaces a uid that's already set, so running it again is harmless. If 
 If you publish it on the internet, make sure the access policy is in place *before* the hostname goes live.
 
 **Don't leave a side door open.** A proxy only protects the traffic that goes through it. If the app listens on all interfaces, anyone on the same network can skip the proxy and talk to it directly. When the proxy or tunnel runs on the same machine, bind to loopback: `DINNER_BIND=127.0.0.1` with the Alpine installer, or `"127.0.0.1:8000:8000"` under `ports:` in `docker-compose.yml`. When it runs elsewhere, firewall the port so only the proxy can reach it.
+
+### Verifying Cloudflare Access
+
+If Cloudflare Access is your login, Dinner Log can check Access's signed token itself, so the side door stays shut even if the app is reachable around the tunnel (a LAN client, a port left open, an Access application that doesn't cover every path). Set both:
+
+```sh
+# /etc/conf.d/dinner-log (Alpine) or .env (Docker)
+export CF_TEAM_DOMAIN=yourteam.cloudflareaccess.com   # your Zero Trust team domain
+export CF_AUD=<Application Audience (AUD) tag>         # on the Access application's overview
+```
+
+Then restart. Every request, including the service worker, manifest and icons, must carry a valid `Cf-Access-Jwt-Assertion` (Access adds it to every request it lets through): signed by your team's current key, for this application's AUD, not expired. Anything else gets a short 403 page; the reason is in the log (`/var/log/dinner-log.log`), e.g. `Access refused: GET / from 192.168.1.20: no Access token (LAN_ACCESS is off)`.
+
+- **Unset, nothing changes.** With only one of the two set, the app refuses to start rather than run unprotected; likewise if PyJWT is missing (the Alpine installer adds `py3-jwt py3-cryptography`; Docker gets it from `requirements.txt`).
+- **Exceptions.** `/api/history` is called by Cookbook Collection with its bearer token instead, and checks that token itself. `/healthz` answers `ok` to anyone, for health checks; it says nothing else.
+- **Signing keys** come from `https://<team domain>/cdn-cgi/access/certs` and are cached. A token naming an unknown key triggers at most one fetch a minute, so junk tokens can't make the app hammer Cloudflare; if a fetch fails, the keys it already has keep working.
+- **Clock.** Up to a minute of clock difference with Cloudflare is tolerated. More than that and fresh sign-ins are refused as "issued in the future"; keep the server's time synced.
+
+**Using it directly on the home network.** With `LAN_ACCESS=1`, a request that didn't come through Cloudflare is let in when:
+
+- the connecting address is in `LAN_CIDRS` (default: loopback and private ranges). Only the socket's address counts; forwarded headers are ignored;
+- the URL uses an IP address (`http://192.168.1.5:8000`) or a name listed in `LAN_HOSTS`. This blocks DNS rebinding, where a web page re-points its own name at your server;
+- it carries no Access token and no Cloudflare headers. A token that fails, or a request that came through the tunnel without one, is refused, never treated as LAN. This matters when `cloudflared` runs on the same machine: its connections come from `127.0.0.1`.
+
+`LAN_ACCESS` means "anyone who can reach the port from those networks", so keep it off on networks you don't trust. **Under Docker**, check the address the app sees before relying on it: rootless Docker and Podman (and connections to a published port from the host itself) can show every client as one internal address, which would let everyone in. Leave it off there, or bind the port to loopback.
 
 **Cross-site requests.** Because login lives in the proxy's cookie, the app refuses POSTs that browsers mark as coming from another site, including sibling subdomains (`Sec-Fetch-Site: cross-site` or `same-site`). This check doesn't depend on the `Host` header, so it works behind proxies that rewrite it (nginx does by default). For browsers that don't send that header, it falls back to comparing `Origin` with `Host` / `X-Forwarded-Host`. To let a specific sibling site post, list its origin in `TRUSTED_ORIGINS` (e.g. `https://other.example.com`).
 
