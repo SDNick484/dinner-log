@@ -24,7 +24,7 @@ docker compose up -d --build
 
 Open <http://localhost:8000> (or `http://<server-ip>:8000` from other devices on your network).
 
-All data lives in `./data` (`meals.db` and `photos/`). Back that folder up. The image is Alpine-based and runs the app as an unprivileged `dinnerlog` user; on first start it takes ownership of `./data` (older images ran as root). The user is uid/gid 10001; if your storage refuses `chown` (some NFS/SMB mounts), make `./data` writable by that uid yourself. The `env_file` syntax in `docker-compose.yml` needs Docker Compose 2.24 or newer.
+All data lives in `./data` (`meals.db` and `photos/`). See *Backups* below. The image is Alpine-based and runs the app as an unprivileged `dinnerlog` user; on first start it takes ownership of `./data` (older images ran as root). The user is uid/gid 10001; if your storage refuses `chown` (some NFS/SMB mounts), make `./data` writable by that uid yourself. The `env_file` syntax in `docker-compose.yml` needs Docker Compose 2.24 or newer.
 
 ## Run without Docker
 
@@ -47,6 +47,9 @@ Environment variables (see `.env.example`):
 | `COOKBOOK_TOKEN` | (unset) | Cookbook Collection's `READ_TOKEN`; lets "Pick for tonight" draw on its recipes |
 | `HISTORY_TOKEN` | (unset; the Alpine installer generates one) | Lets Cookbook Collection read cooking history from `/api/history` (see *Linking the two apps*). Unset, the endpoint doesn't exist |
 | `TRUSTED_ORIGINS` | (unset) | Extra comma-separated origins allowed to POST (see Security). Rarely needed. |
+| `BACKUP_DIR` | `DATA_DIR/backups` (Alpine installer: `/var/backups/dinner-log`) | Where `backup.py` writes nightly database snapshots (see Backups) |
+| `BACKUP_KEEP_DAYS` | `14` | Days of snapshots to keep |
+| `BACKUP_TARGET` | (unset) | Folder on other storage, e.g. a NAS mount. Snapshots and photos are copied there too |
 
 Use a single gunicorn worker; SQLite is happiest that way and one worker is plenty for a household.
 
@@ -68,6 +71,60 @@ DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh setup-dinner
 ```
 
 It unpacks the app to a temporary folder and runs the same `deploy/install-alpine.sh`. Re-run the installer (either way) after `git pull` to upgrade. Your data is kept, and so are your settings in `/etc/conf.d/dinner-log`; any `DINNER_*` variable you pass updates just that setting. `DINNER_BIND` defaults to `0.0.0.0` (all interfaces); see Security below.
+
+## Backups
+
+`backup.py` takes a consistent snapshot of the database with SQLite's online backup API (safe while the app is running), checks it with `PRAGMA integrity_check`, gzips it, and keeps `BACKUP_KEEP_DAYS` days of them in `BACKUP_DIR`. With `BACKUP_TARGET` set it also copies each snapshot and any new photos there:
+
+```
+BACKUP_DIR/2026-11-09/meals.db.gz
+BACKUP_TARGET/db/2026-11-09/dinner-log-meals.db.gz
+BACKUP_TARGET/files/dinner-log/photos/<name>.jpg
+```
+
+- **Photos are only backed up to `BACKUP_TARGET`.** Without it, and with the local snapshots on the same disk as the data, a lost disk loses everything. Point it at other storage.
+- Photos are copied once and never removed from the target, so deleting a dinner (or a photo) in the app doesn't delete the copy. Clean the target by hand if you need something gone.
+- Snapshot folders are `0700` and files `0600`, owned by the service user: they hold every dinner and note. The target's permissions are up to you; it must be writable by the service user (uid 10001 under Docker).
+- Exit status is non-zero when anything failed, including a `BACKUP_TARGET` that isn't a writable folder (an NFS share that didn't mount, say). The local snapshot is still taken.
+
+**Alpine installer.** It installs `/etc/periodic/daily/dinner-log-backup` and enables `crond`; the job runs nightly as the `dinnerlog` user and logs to `/var/log/dinner-log-backup.log`. On upgrade it also takes a snapshot before restarting the service. If Cookbook Collection's installer has put its `app-backup` job on the same host, that job already backs up `/var/lib/dinner-log` (same layout on the target), so Dinner Log's job skips itself each night. Either install order works, and if `app-backup` is removed Dinner Log's job takes over. To run it by hand:
+
+```sh
+/etc/periodic/daily/dinner-log-backup; tail /var/log/dinner-log-backup.log
+```
+
+**Docker.** The container has no scheduler; add a line to the host's crontab:
+
+```sh
+# crontab -e on the Docker host
+30 3 * * * cd /path/to/dinner-log && docker compose exec -T -u dinnerlog dinner-log python backup.py >> data/backup.log 2>&1
+```
+
+Snapshots go to `./data/backups`. For `BACKUP_TARGET`, mount the storage into the container (e.g. `- /mnt/nas/dinner-log:/backup-target` under `volumes:`) and set `BACKUP_TARGET=/backup-target` in `.env`.
+
+### Restoring
+
+Stop the app first so nothing writes while you swap the file.
+
+```sh
+# Alpine
+rc-service dinner-log stop
+gunzip -c /var/backups/dinner-log/2026-11-09/meals.db.gz > /var/lib/dinner-log/meals.db
+rm -f /var/lib/dinner-log/meals.db-journal                    # a leftover journal would be replayed onto it
+cp -a <BACKUP_TARGET>/files/dinner-log/photos/. /var/lib/dinner-log/photos/
+chown -R dinnerlog:dinnerlog /var/lib/dinner-log
+rc-service dinner-log start
+
+# Docker (from the folder with docker-compose.yml)
+docker compose stop
+gunzip -c data/backups/2026-11-09/meals.db.gz > data/meals.db
+rm -f data/meals.db-journal
+cp -a <BACKUP_TARGET>/files/dinner-log/photos/. data/photos/
+sudo chown -R 10001:10001 data       # the entrypoint only re-owns ./data when the folder itself isn't 10001's
+docker compose start
+```
+
+Restoring from `BACKUP_TARGET` works the same way with `<BACKUP_TARGET>/db/<day>/dinner-log-meals.db.gz`. Photos the restored database doesn't mention are harmless; they just take space.
 
 ## Recipes from Cookbook Collection
 

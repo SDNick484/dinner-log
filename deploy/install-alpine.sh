@@ -7,6 +7,8 @@
 # - copies the app to /opt/dinner-log
 # - keeps the database and photos in /var/lib/dinner-log (never touched on upgrade)
 # - runs as an unprivileged "dinnerlog" user via an OpenRC service
+# - backs up the database nightly (/etc/periodic/daily/dinner-log-backup), unless Cookbook
+#   Collection's app-backup job on the same host already does
 # Safe to re-run.
 set -eu
 
@@ -21,7 +23,7 @@ DATA_DIR=/var/lib/dinner-log
 CONF=/etc/conf.d/dinner-log
 
 echo "==> Installing packages"
-apk add --no-cache python3 py3-flask py3-pillow py3-gunicorn tzdata >/dev/null
+apk add --no-cache python3 py3-flask py3-pillow py3-gunicorn tzdata su-exec >/dev/null
 GUNICORN="$(command -v gunicorn)"
 
 echo "==> Creating user and directories"
@@ -30,8 +32,8 @@ adduser -S -D -H -G dinnerlog -h "$DATA_DIR" -s /sbin/nologin dinnerlog 2>/dev/n
 mkdir -p "$APP_DIR" "$DATA_DIR"
 
 echo "==> Copying app to $APP_DIR"
-rm -rf "$APP_DIR/app.py" "$APP_DIR/backfill_uids.py" "$APP_DIR/templates" "$APP_DIR/static"
-cp -r "$SRC/app.py" "$SRC/backfill_uids.py" "$SRC/templates" "$SRC/static" "$APP_DIR/"
+rm -rf "$APP_DIR/app.py" "$APP_DIR/backfill_uids.py" "$APP_DIR/backup.py" "$APP_DIR/templates" "$APP_DIR/static"
+cp -r "$SRC/app.py" "$SRC/backfill_uids.py" "$SRC/backup.py" "$SRC/templates" "$SRC/static" "$APP_DIR/"
 chown -R root:root "$APP_DIR"
 chown -R dinnerlog:dinnerlog "$DATA_DIR"
 chmod 750 "$DATA_DIR"
@@ -62,8 +64,34 @@ set_conf "export APP_TZ" "${DINNER_TZ:-}" "IANA time zone used for \"today\" (e.
 set_conf "export COOKBOOK_URL" "" "Cookbook Collection's public address, for links (optional)" ""
 set_conf "export COOKBOOK_API_URL" "" "Cookbook Collection's private address, e.g. http://127.0.0.1:8767 (optional)" ""
 set_conf "export COOKBOOK_TOKEN" "" "Cookbook Collection's READ_TOKEN, for Pick for tonight (optional)" ""
+set_conf "export BACKUP_DIR" "" "Where nightly database snapshots go" /var/backups/dinner-log
+set_conf "export BACKUP_KEEP_DAYS" "" "Days of nightly snapshots to keep" 14
+set_conf "export BACKUP_TARGET" "" "Optional folder on other storage (e.g. an NFS mount) that also gets snapshots and photos" ""
 sh "$SRC/deploy/history-token.sh" "$CONF"  # made once if missing or empty; never replaced
 chmod 600 "$CONF"  # holds COOKBOOK_TOKEN and HISTORY_TOKEN; OpenRC reads it as root
+
+echo "==> Installing nightly backup"
+# Always installed: on a host where Cookbook Collection's app-backup runs, the job skips itself each night,
+# so either install order works and nothing is backed up twice (or not at all if app-backup goes away).
+CONF_DATA_DIR=$(. "$CONF"; echo "$DATA_DIR")
+BACKUP_DIR=$(. "$CONF"; echo "${BACKUP_DIR:-/var/backups/dinner-log}")
+mkdir -p "$BACKUP_DIR"
+chown dinnerlog:dinnerlog "$BACKUP_DIR"
+chmod 700 "$BACKUP_DIR"
+mkdir -p /etc/periodic/daily
+install -m 755 "$SRC/deploy/dinner-log-backup" /etc/periodic/daily/dinner-log-backup
+rc-update add crond default >/dev/null 2>&1 || true
+rc-service crond start >/dev/null 2>&1 || true
+if [ -e /etc/periodic/daily/app-backup ]; then
+    BACKUP_NOTE="Backups: Cookbook Collection's app-backup covers this host (Dinner Log's job skips itself)"
+elif [ -f "$CONF_DATA_DIR/meals.db" ]; then
+    echo "==> Backing up the database before restarting"
+    /etc/periodic/daily/dinner-log-backup \
+        || echo "    (backup reported a problem; see /var/log/dinner-log-backup.log)" >&2
+    BACKUP_NOTE="Backups: nightly to $BACKUP_DIR (log: /var/log/dinner-log-backup.log)"
+else
+    BACKUP_NOTE="Backups: nightly to $BACKUP_DIR (log: /var/log/dinner-log-backup.log)"
+fi
 
 cat > /etc/init.d/dinner-log <<INITEOF
 #!/sbin/openrc-run
@@ -109,7 +137,9 @@ done
 IP="$(ip -4 -o addr show 2>/dev/null | awk '$2 != "lo" {print $4}' | cut -d/ -f1 | head -n1)"
 echo
 echo "Dinner Log is running: http://${IP:-<host-ip>}:$PORT"
-echo "Data: $DATA_DIR (database + photos; include it in backups)"
+echo "Data: $CONF_DATA_DIR (database + photos)"
+echo "$BACKUP_NOTE"
+[ -n "${BACKUP_TARGET:-}" ] || echo "  Photos are only backed up when BACKUP_TARGET is set (see README > Backups)"
 echo "Logs: /var/log/dinner-log.log"
 echo "Cookbook Collection reads cooking history with HISTORY_TOKEN: set its DINNERLOG_TOKEN to the same value"
 echo "  (grep HISTORY_TOKEN $CONF)"
