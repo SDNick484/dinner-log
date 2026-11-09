@@ -48,6 +48,9 @@ while :; do
     sleep 1
 done
 ok "HEALTHCHECK reports healthy"
+errors=$(docker logs "$NAME" 2>&1 | grep -F '[ERROR]' || true)
+[ -z "$errors" ] || fail "errors in the container log: $errors"
+ok "no [ERROR] lines in the container log"
 
 step "Not root"
 expect "PID 1 uid/gid" "$(docker exec "$NAME" awk '/^Uid:/ {u=$2} /^Gid:/ {g=$2} END {print u ":" g}' /proc/1/status)" \
