@@ -9,6 +9,7 @@ import pytest
 
 from test_app import load_app
 from test_history import TOKEN, get
+from test_recipe_picker import BOOKS, catalog
 
 BU = "b" * 32
 RU = "a1" * 16
@@ -83,6 +84,43 @@ def test_form_clears_uids_with_ids():
     from test_app import ROOT
     js = open(f"{ROOT}/templates/form.html").read()
     assert "bookIdInput.value = recipeIdInput.value = bookUidInput.value = recipeUidInput.value = ''" in js
+    assert "recipeUidInput.value = r.uid || ''" in js
+
+
+# ------------------------------------------------------------------ the picker and "Pick for tonight"
+
+ZUNI_UIDS = {"id": 7, "uid": BU, "title": "The Zuni Café Cookbook", "recipes": [
+    {"id": 1, "uid": RU, "name": "Zuni Roast Chicken with Bread Salad", "page": "342"},
+    {"id": 2, "uid": "NOT-HEX", "name": "Zuni Caesar Salad", "page": None}]}
+
+
+def test_picker_returns_uids(tmp_path, monkeypatch):
+    a = load_app(tmp_path)
+    catalog(monkeypatch, a, {"/api/books": BOOKS, "/api/books/7": ZUNI_UIDS})
+    r = a.app.test_client().get("/cookbook/recipes?title=zuni%20cafe%20cookbook").get_json()
+    assert r["book_id"] == 7 and r["book_uid"] == BU
+    assert [(x["id"], x["uid"]) for x in r["recipes"]] == [(1, RU), (2, None)]
+    cached = a.cookbook_book("The Zuni Café Cookbook")         # from the cache: the uid is still there
+    assert cached["book_uid"] == BU
+
+
+def test_catalog_dish_carries_uids(tmp_path):
+    a = load_app(tmp_path)
+    import datetime
+    d = a.catalog_dish({"id": 1, "uid": RU, "book_id": 7, "book_uid": BU, "name": "Roast", "book_title": "Zuni"},
+                       datetime.date(2026, 11, 9))
+    assert (d["cookbook_book_uid"], d["cookbook_recipe_uid"]) == (BU, RU)
+    d = a.catalog_dish({"id": 1, "book_id": 7, "name": "Roast"}, datetime.date(2026, 11, 9))  # older catalog
+    assert (d["cookbook_book_uid"], d["cookbook_recipe_uid"]) == (None, None)
+
+
+def test_log_tonight_link_carries_uids(tmp_path, monkeypatch):
+    a = load_app(tmp_path)
+    monkeypatch.setattr(a, "COOKBOOK_API_URL", "http://127.0.0.1:8767")
+    monkeypatch.setattr(a, "fetch_cookbook_picks", lambda *a_, **k: {"recipes": [
+        {"id": 1, "uid": RU, "book_id": 7, "book_uid": BU, "name": "Roast", "book_title": "Zuni", "page": "342"}]})
+    html = a.app.test_client().get("/?suggest=1&mode=new").get_data(as_text=True)
+    assert f"cookbook_book_uid={BU}" in html and f"cookbook_recipe_uid={RU}" in html
 
 
 # ------------------------------------------------------------------ GET /api/history

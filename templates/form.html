@@ -135,7 +135,7 @@
   const recipeInput = document.getElementById('recipe-input');
   const recipeLabel = document.getElementById('recipe-label');
   const recipeList = document.getElementById('book-recipes');
-  let recipes = new Map(), autoName = null, autoPage = null, loadedFor = null, loadedBookId = null, seq = 0;
+  let recipes = new Map(), autoName = null, autoPage = null, loadedFor = null, loadedBookId = null, loadedBookUid = null, seq = 0;
 
   // Cookbook Collection ids for the recipe this dinner came from (a pick, a link, or the picker below).
   // Typing over the name, book or page, or switching the source, means it may be a different dish now:
@@ -163,6 +163,7 @@
     if (mine !== seq) return;  // a newer title was typed meanwhile
     loadedFor = title;
     loadedBookId = data.book_id || null;
+    loadedBookUid = data.book_uid || null;
     recipes = new Map();
     recipeList.replaceChildren(...data.recipes.filter(r => !recipes.has(r.name) && recipes.set(r.name, r))
       .map(r => { const o = document.createElement('option'); o.value = r.name; if (r.page) o.label = 'p. ' + r.page; return o; }));
@@ -177,7 +178,10 @@
     if (!r) return;
     if (!nameInput.value.trim() || nameInput.value === autoName) nameInput.value = autoName = r.name;
     if (r.page && (!detailInput.value.trim() || detailInput.value === autoPage)) detailInput.value = autoPage = r.page;
-    if (r.id && loadedBookId) { bookIdInput.value = loadedBookId; recipeIdInput.value = r.id; }
+    if (r.id && loadedBookId) {
+      bookIdInput.value = loadedBookId; recipeIdInput.value = r.id;
+      bookUidInput.value = loadedBookUid || ''; recipeUidInput.value = r.uid || '';
+    }
   }
 
   let titleTimer;
