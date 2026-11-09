@@ -39,7 +39,7 @@ def test_payload_is_the_app_only(built):
     names = tar.getnames()
     top = {n.split("/")[1] for n in names if n.count("/") >= 1}
     assert {n.split("/")[0] for n in names} == {"dinner-log"}
-    assert top == {"app.py", "backfill_uids.py", "templates", "static", "deploy"}
+    assert top == {"app.py", "backfill_uids.py", "backfill_thumbs.py", "templates", "static", "deploy"}
     assert "dinner-log/deploy/install-alpine.sh" in names
     assert not any("__pycache__" in n or n.endswith(".pyc") or "/data/" in n for n in names)
     assert all(m.uid == 0 and m.gid == 0 for m in tar.getmembers())
@@ -65,5 +65,5 @@ def test_header_unpacks_and_runs_from_any_cwd(built, tmp_path):
     r = subprocess.run(["sh", "../probe/setup.sh"], cwd=elsewhere, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
     tmp = r.stdout.split("TMP=", 1)[1].split("\n", 1)[0]
-    assert set(r.stdout.split("\n", 1)[1].split()) == {"app.py", "backfill_uids.py", "templates", "static", "deploy"}
+    assert set(r.stdout.split("\n", 1)[1].split()) == {"app.py", "backfill_uids.py", "backfill_thumbs.py", "templates", "static", "deploy"}
     assert not os.path.exists(tmp)                                       # cleaned up on exit

@@ -11,7 +11,7 @@ For each dinner you can record:
 
 It's built for phones: a big "+" button, camera/gallery photo picker, installable to the home screen as a PWA. The log is searchable and grouped by month. Cookbook and restaurant names autocomplete from what you've entered before.
 
-Flask + SQLite, no external services. Photos are stored on disk and downscaled on upload (1600 px long edge, JPEG).
+Flask + SQLite, no external services. Photos are stored on disk and downscaled on upload (1600 px long edge, JPEG, with a 480 px thumbnail beside each; see [Photos](#photos)).
 
 ## Quick start (Docker)
 
@@ -68,6 +68,33 @@ DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh setup-dinner
 ```
 
 It unpacks the app to a temporary folder and runs the same `deploy/install-alpine.sh`. Re-run the installer (either way) after `git pull` to upgrade. Your data is kept, and so are your settings in `/etc/conf.d/dinner-log`; any `DINNER_*` variable you pass updates just that setting. `DINNER_BIND` defaults to `0.0.0.0` (all interfaces); see Security below.
+
+## Photos
+
+Uploads are decoded only as JPEG, PNG or WebP (and HEIC when the optional `pillow-heif` package is installed). Pillow's other decoders are never used on uploads, and anything else, or an image over about 40 megapixels once decoded, is skipped and reported on the dinner's page. Each accepted photo is re-encoded as a JPEG with no EXIF, so phone location data is dropped, and saved as `<id>.jpg` (1600 px long edge) in `photos/`, with a 480 px thumbnail `<id>-t.jpg` beside it. The feed and the edit form show the thumbnail; a dinner's own page shows the full image. If a thumbnail is missing, the full image is shown instead. Photos are served with `Cache-Control: private, max-age=31536000, immutable` (their names never change), so a browser keeps them for a year but a shared cache or CDN in front of the app won't.
+
+### Thumbnails for older photos
+
+Photos uploaded before thumbnails existed have none until you run `backfill_thumbs`. It writes the missing ones from the stored 1600 px image, prints one line per photo and a total, and leaves existing thumbnails alone, so running it again changes nothing. A photo whose file is missing or unreadable is reported, the rest are still done, and the exit status is 1. Dry run first:
+
+```sh
+# Alpine (the config file is root-only; exported variables carry DATA_DIR)
+( . /etc/conf.d/dinner-log && cd /opt/dinner-log && python3 -m backfill_thumbs --dry-run )
+( . /etc/conf.d/dinner-log && cd /opt/dinner-log && python3 -m backfill_thumbs )
+chown -R dinnerlog:dinnerlog /var/lib/dinner-log/photos   # it ran as root; keep the files the app's
+
+# Docker
+docker compose exec -u dinnerlog dinner-log python -m backfill_thumbs --dry-run
+
+# A checkout
+DATA_DIR=./data python3 -m backfill_thumbs --dry-run
+```
+
+```
+photo    12  3f9c0a7e2b1d4c58a6e07d93b4f1a2c8.jpg: would write a thumbnail  [would]
+photo    13  7be41d0c9a3f4e6d8b25c1f0a97d3e64.jpg: already has a thumbnail  [has]
+2 photos checked: would write 1 thumbnails, 1 already had one, 0 errors (dry run: nothing written)
+```
 
 ## Recipes from Cookbook Collection
 
