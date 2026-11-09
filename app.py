@@ -1,6 +1,7 @@
 """Dinner Log: a tiny self-hosted app for tracking family dinners.
 
-Flask + SQLite, photos stored on disk. No auth: run it behind your LAN/VPN.
+Flask + SQLite, photos stored on disk. No login of its own: run it behind an access proxy or on a trusted
+network. With CF_TEAM_DOMAIN and CF_AUD set it also verifies Cloudflare Access's token on every request.
 """
 import datetime
 import hashlib
@@ -11,6 +12,7 @@ import os
 import random
 import re
 import sqlite3
+import threading
 import time
 import unicodedata
 import urllib.error
@@ -88,6 +90,206 @@ CREATE TABLE IF NOT EXISTS photos (
 CREATE INDEX IF NOT EXISTS idx_meals_day ON meals(day DESC);
 CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id);
 """
+
+
+# --------------------------------------------------------------------------- access
+# Cloudflare Access verification. Off unless both CF_TEAM_DOMAIN and CF_AUD are set; then every request
+# needs a valid Cf-Access-Jwt-Assertion, except routes marked @bearer_route / @public_route and, with
+# LAN_ACCESS=1, direct requests from the local network (see lan_access()).
+def _setting(name):
+    return os.environ.get(name, "").strip().strip("'\"").strip()
+
+
+def _flag(name):
+    """An on/off setting: "1" (conf.d quoting tolerated) is on, anything else off."""
+    return _setting(name) == "1"
+
+
+def _split(raw):
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+CF_TEAM_DOMAIN = re.sub(r"^https?://", "", _setting("CF_TEAM_DOMAIN")).split("/")[0].lower()
+CF_AUD = _setting("CF_AUD")
+if bool(CF_TEAM_DOMAIN) != bool(CF_AUD):
+    raise RuntimeError("Set both CF_TEAM_DOMAIN and CF_AUD to verify Cloudflare Access sign-ins, or neither. "
+                       "With only one set, Dinner Log won't start rather than run unprotected.")
+ACCESS_ON = bool(CF_TEAM_DOMAIN and CF_AUD)
+ACCESS_LEEWAY = 60  # seconds of clock difference with Cloudflare tolerated on exp / iat
+
+LAN_ACCESS = _flag("LAN_ACCESS")
+PRIVATE_NETS = "127.0.0.0/8,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10"
+LAN_CIDRS = [ipaddress.ip_network(n, strict=False) for n in _split(_setting("LAN_CIDRS") or PRIVATE_NETS)]
+LAN_HOSTS = {h.lower() for h in _split(_setting("LAN_HOSTS"))} | {"localhost"}
+
+if ACCESS_ON:
+    try:
+        import jwt
+        from jwt.algorithms import has_crypto
+    except ImportError as exc:
+        raise RuntimeError("CF_TEAM_DOMAIN and CF_AUD are set, but PyJWT isn't installed: "
+                           "pip install 'pyjwt[crypto]' (Alpine: apk add py3-jwt py3-cryptography)") from exc
+    if not has_crypto:
+        raise RuntimeError("CF_TEAM_DOMAIN and CF_AUD are set, but PyJWT can't verify RS256 without the "
+                           "cryptography package (Alpine: apk add py3-cryptography)")
+
+
+class AccessKeys:
+    """Cloudflare Access signing keys by kid, cached for the process.
+
+    Unlike PyJWKClient on its own, a token with an unknown kid can't force a fetch per request: any fetch,
+    successful or not, is followed by MIN_REFRESH seconds without another. A failed fetch keeps the keys
+    already known. Keys older than MAX_AGE are refreshed on the next request, so a key Cloudflare has
+    withdrawn stops working within the hour."""
+    MIN_REFRESH = 60
+    MAX_AGE = 3600
+
+    def __init__(self, certs_url):
+        self.client = jwt.PyJWKClient(certs_url, timeout=5)
+        self.clock = time.monotonic
+        self.lock = threading.Lock()
+        self.keys = {}
+        self.fetched_at = None   # last successful fetch
+        self.tried_at = None     # last attempt, successful or not
+
+    def key_for(self, kid):
+        with self.lock:
+            now = self.clock()
+            key = self.keys.get(kid)
+            if key is not None and self.fetched_at is not None and now - self.fetched_at < self.MAX_AGE:
+                return key
+            if self.tried_at is not None and now - self.tried_at < self.MIN_REFRESH:
+                return key   # backing off: a stale key still works; an unknown kid stays unknown
+            self.tried_at = now
+            try:
+                fresh = self.client.get_signing_keys(refresh=True)
+            except Exception as exc:  # noqa: BLE001 — network, bad JSON, no keys: keep what we have
+                app.logger.warning("Access: couldn't fetch Cloudflare's signing keys (%s); %d cached key(s) kept. "
+                                   "Check CF_TEAM_DOMAIN and outbound HTTPS.", type(exc).__name__, len(self.keys))
+                return key
+            self.keys = {k.key_id: k.key for k in fresh if k.key_id}
+            self.fetched_at = now
+            return self.keys.get(kid)
+
+
+ACCESS_KEYS = AccessKeys(f"https://{CF_TEAM_DOMAIN}/cdn-cgi/access/certs") if ACCESS_ON else None
+
+
+def access_claims():
+    """(claims, None) for a valid Cf-Access-Jwt-Assertion, else (None, why). why is for the log only."""
+    tok = (request.headers.get("Cf-Access-Jwt-Assertion") or "").strip()
+    if not tok:
+        return None, "empty token"
+    try:
+        header = jwt.get_unverified_header(tok)
+    except jwt.InvalidTokenError:
+        return None, "malformed token"
+    if header.get("alg") != "RS256":
+        return None, "token not signed with RS256"
+    kid = header.get("kid")
+    if not isinstance(kid, str) or not kid:
+        return None, "token has no key id"
+    key = ACCESS_KEYS.key_for(kid)
+    if key is None:
+        return None, "token signed with an unknown key"
+    try:
+        claims = jwt.decode(tok, key, algorithms=["RS256"], audience=CF_AUD, issuer=f"https://{CF_TEAM_DOMAIN}",
+                            leeway=ACCESS_LEEWAY, options={"require": ["exp", "iat", "aud", "iss"]})
+    except jwt.ExpiredSignatureError:
+        return None, "token expired"
+    except jwt.ImmatureSignatureError:
+        return None, "token issued in the future (check the server clock)"
+    except jwt.InvalidAudienceError:
+        return None, "token is for another Access application (check CF_AUD)"
+    except jwt.InvalidIssuerError:
+        return None, "token is from another Access team (check CF_TEAM_DOMAIN)"
+    except jwt.InvalidTokenError as exc:
+        return None, f"invalid token ({type(exc).__name__})"
+    return claims, None
+
+
+def _host_only(netloc):
+    """'192.168.1.5:8000' -> '192.168.1.5', '[::1]:8000' -> '::1', 'Dinners.lan' -> 'dinners.lan'."""
+    netloc = (netloc or "").strip().lower()
+    if netloc.startswith("["):
+        return netloc[1:netloc.find("]")] if "]" in netloc else ""
+    return netloc.rsplit(":", 1)[0] if netloc.count(":") == 1 else netloc
+
+
+def _is_ip(host):
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def lan_access():
+    """(True, None) for a direct request from the local network that LAN_ACCESS lets in, else (False, why).
+
+    - Requests that came through Cloudflare never qualify. cloudflared on this host connects from 127.0.0.1,
+      so without this a path the Access application doesn't cover would land here.
+    - The peer is the socket address (request.remote_addr); no forwarded header is trusted.
+    - Host must be an IP address or a LAN_HOSTS name. That stops DNS rebinding: a page on
+      attacker.example re-pointed at this server still sends Host: attacker.example."""
+    if not LAN_ACCESS:
+        return False, "no Access token (LAN_ACCESS is off)"
+    if request.headers.get("Cf-Ray") or request.headers.get("Cf-Connecting-Ip"):
+        return False, "came through Cloudflare without an Access token"
+    try:
+        peer = ipaddress.ip_address((request.remote_addr or "").split("%")[0])
+    except ValueError:
+        return False, "unknown peer address"
+    if peer.version == 6 and peer.ipv4_mapped:
+        peer = peer.ipv4_mapped  # a dual-stack bind reports IPv4 clients as ::ffff:a.b.c.d
+    if not any(peer in n for n in LAN_CIDRS):
+        return False, "peer not in LAN_CIDRS"
+    host = _host_only(request.host)
+    if not (_is_ip(host) or host in LAN_HOSTS):
+        return False, "Host is a name not in LAN_HOSTS"
+    return True, None
+
+
+def bearer_route(fn):
+    """Exempt a route from the Access check because another server calls it with a bearer token. The route
+    must check that token itself; tests/test_access.py fails for one that answers without it."""
+    fn.access_exempt = "bearer"
+    return fn
+
+
+def public_route(fn):
+    """Exempt a route from the Access check entirely. Only /healthz; tests/test_access.py lists them."""
+    fn.access_exempt = "public"
+    return fn
+
+
+def access_denied():
+    resp = app.make_response((render_template("denied.html"), 403))
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@app.before_request
+def require_access():
+    """Registered before refuse_cross_site_writes, so it runs first. Static files, the service worker and
+    the manifest aren't exempt: through Access they carry the token like everything else."""
+    g.access_email = None
+    if not ACCESS_ON:
+        return None
+    view = app.view_functions.get(request.endpoint) if request.endpoint else None
+    if getattr(view, "access_exempt", None):
+        return None
+    if "Cf-Access-Jwt-Assertion" in request.headers:
+        claims, why = access_claims()   # a token that fails never falls back to LAN access
+        if claims is not None:
+            g.access_email = (claims.get("email") or "").strip().lower() or None
+            return None
+    else:
+        ok, why = lan_access()
+        if ok:
+            return None
+    app.logger.warning("Access refused: %s %s from %s: %s", request.method, request.path, request.remote_addr, why)
+    return access_denied()
 
 
 TRUSTED_ORIGINS = {o.strip().rstrip("/") for o in os.environ.get("TRUSTED_ORIGINS", "").split(",")
@@ -356,11 +558,39 @@ def filter_cookbook_search_url(query):
     return cookbook_search_url(query)
 
 
+def cookbook_uid_url(book_uid, recipe_uid=None, online=False):
+    """A deep link into Cookbook Collection by stable uid: its `#/uid/<book>[/<recipe>]` route, which
+    resolves the uid and opens the book (highlighting the recipe). Recipe websites (`kind='online'`) are
+    editor-only there, so those links go through `/admin`. "" when there is no COOKBOOK_URL or no valid
+    book uid. Only validated hex ever reaches the URL."""
+    book_uid = parse_cookbook_uid(book_uid)
+    if not COOKBOOK_URL or not book_uid:
+        return ""
+    recipe_uid = parse_cookbook_uid(recipe_uid)
+    path = f"{book_uid}/{recipe_uid}" if recipe_uid else book_uid
+    return f"{COOKBOOK_URL}{'/admin' if online else '/'}#/uid/{path}"
+
+
+def catalog_url(item, recipe=False):
+    """The uid link for a meal row or a pick (dict), or "" when it carries no book uid, so the caller keeps
+    its name search. recipe=True asks for the recipe-level link: "" unless the item has a recipe uid too."""
+    def get(key):
+        try:
+            return item[key]
+        except (KeyError, IndexError):
+            return None
+    if recipe and not parse_cookbook_uid(get("cookbook_recipe_uid")):
+        return ""
+    return cookbook_uid_url(get("cookbook_book_uid"), get("cookbook_recipe_uid") if recipe else None,
+                            online=get("source_type") == "online")
+
+
 @app.context_processor
 def inject_cookbook_config():
     return {
         "cookbook_url": COOKBOOK_URL,
         "cookbook_search_url": cookbook_search_url,
+        "catalog_url": catalog_url,
     }
 
 
@@ -891,6 +1121,7 @@ def history_rows(con):
 
 
 @app.route("/api/history")
+@bearer_route
 def history():
     """Read-only cooking history for Cookbook Collection, behind HISTORY_TOKEN. The whole list every time,
     with an ETag so an unchanged history costs a 304."""
@@ -905,6 +1136,17 @@ def history():
     if request.headers.get("If-None-Match") == etag:
         return "", 304, headers
     return body, 200, {**headers, "Content-Type": "application/json"}
+
+
+@app.route("/healthz")
+@public_route
+def healthz():
+    """For health checks: answers without a login, says nothing beyond whether the database opens."""
+    try:
+        db().execute("SELECT 1").fetchone()
+    except sqlite3.Error:
+        return "database unavailable\n", 503, {"Content-Type": "text/plain", "Cache-Control": "no-store"}
+    return "ok\n", 200, {"Content-Type": "text/plain", "Cache-Control": "no-store"}
 
 
 @app.route("/sw.js")

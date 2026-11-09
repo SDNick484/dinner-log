@@ -15,7 +15,7 @@ RUN if [ "$HEIC" = 1 ]; then \
       pip install --no-cache-dir --only-binary=:all: -r requirements-heic.txt \
       || echo "pillow-heif has no wheel for this platform; HEIC photos stay unsupported"; \
     fi
-COPY app.py backfill_uids.py backfill_thumbs.py ./
+COPY app.py backfill_uids.py backfill_thumbs.py backup.py ./
 COPY templates ./templates
 COPY static ./static
 COPY deploy/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
@@ -25,7 +25,7 @@ ENV DATA_DIR=/data \
 VOLUME /data
 EXPOSE 8000
 HEALTHCHECK --interval=60s --timeout=5s --start-period=10s \
-  CMD wget -q -O /dev/null http://127.0.0.1:8000/ || exit 1
+  CMD wget -q -O /dev/null http://127.0.0.1:8000/healthz || exit 1
 ENTRYPOINT ["docker-entrypoint.sh"]
 # Single worker is plenty for a family; SQLite likes it that way.
 CMD ["gunicorn", "-b", "0.0.0.0:8000", "-w", "1", "--threads", "4", "app:app"]

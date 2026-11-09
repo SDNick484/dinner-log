@@ -1,0 +1,13 @@
+#!/bin/sh
+# Nightly Dinner Log backup. deploy/install-alpine.sh installs this as /etc/periodic/daily/dinner-log-backup
+# (no dot in the name: busybox run-parts skips files that have one), and crond runs it as root.
+# It reads the settings, then runs backup.py as the service user. On a host where Cookbook Collection's
+# app-backup job is installed, that job already backs up /var/lib/dinner-log, so this one does nothing.
+# Log: /var/log/dinner-log-backup.log
+CONF=${DINNER_CONF:-/etc/conf.d/dinner-log}
+APP_DIR=${DINNER_APP_DIR:-/opt/dinner-log}
+LOG=${DINNER_BACKUP_LOG:-/var/log/dinner-log-backup.log}
+# shellcheck disable=SC1090
+[ -f "$CONF" ] && . "$CONF"
+exec su-exec dinnerlog:dinnerlog python3 "$APP_DIR/backup.py" \
+    --skip-if /etc/periodic/daily/app-backup >> "$LOG" 2>&1

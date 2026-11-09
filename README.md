@@ -24,7 +24,7 @@ docker compose up -d --build
 
 Open <http://localhost:8000> (or `http://<server-ip>:8000` from other devices on your network).
 
-All data lives in `./data` (`meals.db` and `photos/`). Back that folder up. The image is Alpine-based and runs the app as an unprivileged `dinnerlog` user; on first start it takes ownership of `./data` (older images ran as root). The user is uid/gid 10001; if your storage refuses `chown` (some NFS/SMB mounts), make `./data` writable by that uid yourself. The `env_file` syntax in `docker-compose.yml` needs Docker Compose 2.24 or newer.
+All data lives in `./data` (`meals.db` and `photos/`). See *Backups* below. The image is Alpine-based and runs the app as an unprivileged `dinnerlog` user; on first start it takes ownership of `./data` (older images ran as root). The user is uid/gid 10001; if your storage refuses `chown` (some NFS/SMB mounts), make `./data` writable by that uid yourself. The `env_file` syntax in `docker-compose.yml` needs Docker Compose 2.24 or newer.
 
 ## Run without Docker
 
@@ -47,6 +47,14 @@ Environment variables (see `.env.example`):
 | `COOKBOOK_TOKEN` | (unset) | Cookbook Collection's `READ_TOKEN`; lets "Pick for tonight" draw on its recipes |
 | `HISTORY_TOKEN` | (unset; the Alpine installer generates one) | Lets Cookbook Collection read cooking history from `/api/history` (see *Linking the two apps*). Unset, the endpoint doesn't exist |
 | `TRUSTED_ORIGINS` | (unset) | Extra comma-separated origins allowed to POST (see Security). Rarely needed. |
+| `BACKUP_DIR` | `DATA_DIR/backups` (Alpine installer: `/var/backups/dinner-log`) | Where `backup.py` writes nightly database snapshots (see Backups) |
+| `BACKUP_KEEP_DAYS` | `14` | Days of snapshots to keep |
+| `BACKUP_TARGET` | (unset) | Folder on other storage, e.g. a NAS mount. Snapshots and photos are copied there too |
+| `CF_TEAM_DOMAIN` | (unset) | Cloudflare Access team domain, e.g. `yourteam.cloudflareaccess.com`. With `CF_AUD`, every request must carry a valid Access token (see *Verifying Cloudflare Access*). Set both or neither |
+| `CF_AUD` | (unset) | AUD tag of the Access application in front of Dinner Log |
+| `LAN_ACCESS` | `0` | `1` = with Access verification on, also let in direct requests from the local network |
+| `LAN_CIDRS` | loopback + private ranges | Comma-separated networks `LAN_ACCESS` allows, e.g. `192.168.1.0/24` |
+| `LAN_HOSTS` | (unset) | Host names `LAN_ACCESS` accepts besides IP addresses and `localhost`, e.g. `dinners.lan` |
 
 Use a single gunicorn worker; SQLite is happiest that way and one worker is plenty for a household.
 
@@ -71,7 +79,7 @@ It unpacks the app to a temporary folder and runs the same `deploy/install-alpin
 
 ## Photos
 
-Uploads are decoded only as JPEG, PNG or WebP (and HEIC when the optional `pillow-heif` package is installed). Pillow's other decoders are never used on uploads, and anything else, or an image over about 40 megapixels once decoded, is skipped and reported on the dinner's page. Each accepted photo is re-encoded as a JPEG with no EXIF, so phone location data is dropped, and saved as `<id>.jpg` (1600 px long edge) in `photos/`, with a 480 px thumbnail `<id>-t.jpg` beside it. The feed and the edit form show the thumbnail; a dinner's own page shows the full image. If a thumbnail is missing, the full image is shown instead. Photos are served with `Cache-Control: private, max-age=31536000, immutable` (their names never change), so a browser keeps them for a year but a shared cache or CDN in front of the app won't.
+Uploads are decoded only as JPEG, PNG or WebP (and HEIC when the optional `pillow-heif` package is installed). Pillow's other decoders are never used on uploads, and anything else, or an image over about 40 megapixels once decoded, is skipped and reported on the dinner's page. Each accepted photo is re-encoded as a JPEG with no EXIF, so phone location data is dropped, and saved as `<id>.jpg` (1600 px long edge) in `photos/`, with a 480 px thumbnail `<id>-t.jpg` beside it. The feed and the edit form show the thumbnail; a dinner's own page shows the full image. If a thumbnail is missing, the full image is shown instead. Backups copy the thumbnails along with the photos; they can always be regenerated with `backfill_thumbs`. Photos are served with `Cache-Control: private, max-age=31536000, immutable` (their names never change), so a browser keeps them for a year but a shared cache or CDN in front of the app won't.
 
 ### HEIC photos (optional)
 
@@ -106,11 +114,67 @@ photo    13  7be41d0c9a3f4e6d8b25c1f0a97d3e64.jpg: already has a thumbnail  [has
 2 photos checked: would write 1 thumbnails, 1 already had one, 0 errors (dry run: nothing written)
 ```
 
+## Backups
+
+`backup.py` takes a consistent snapshot of the database with SQLite's online backup API (safe while the app is running), checks it with `PRAGMA integrity_check`, gzips it, and keeps `BACKUP_KEEP_DAYS` days of them in `BACKUP_DIR`. With `BACKUP_TARGET` set it also copies each snapshot and any new photos there:
+
+```
+BACKUP_DIR/2026-11-09/meals.db.gz
+BACKUP_TARGET/db/2026-11-09/dinner-log-meals.db.gz
+BACKUP_TARGET/files/dinner-log/photos/<name>.jpg
+```
+
+- **Photos are only backed up to `BACKUP_TARGET`.** Without it, and with the local snapshots on the same disk as the data, a lost disk loses everything. Point it at other storage.
+- Photos are copied once and never removed from the target, so deleting a dinner (or a photo) in the app doesn't delete the copy. Clean the target by hand if you need something gone.
+- Snapshot folders are `0700` and files `0600`, owned by the service user: they hold every dinner and note. The target's permissions are up to you; it must be writable by the service user (uid 10001 under Docker).
+- Exit status is non-zero when anything failed, including a `BACKUP_TARGET` that isn't a writable folder (an NFS share that didn't mount, say). The local snapshot is still taken.
+
+**Alpine installer.** It installs `/etc/periodic/daily/dinner-log-backup` and enables `crond`; the job runs nightly as the `dinnerlog` user and logs to `/var/log/dinner-log-backup.log`. On upgrade it also takes a snapshot before restarting the service. If Cookbook Collection's installer has put its `app-backup` job on the same host, that job already backs up `/var/lib/dinner-log` (same layout on the target), so Dinner Log's job skips itself each night. Either install order works, and if `app-backup` is removed Dinner Log's job takes over. To run it by hand:
+
+```sh
+/etc/periodic/daily/dinner-log-backup; tail /var/log/dinner-log-backup.log
+```
+
+**Docker.** The container has no scheduler; add a line to the host's crontab:
+
+```sh
+# crontab -e on the Docker host
+30 3 * * * cd /path/to/dinner-log && docker compose exec -T -u dinnerlog dinner-log python backup.py >> data/backup.log 2>&1
+```
+
+Snapshots go to `./data/backups`. For `BACKUP_TARGET`, mount the storage into the container (e.g. `- /mnt/nas/dinner-log:/backup-target` under `volumes:`) and set `BACKUP_TARGET=/backup-target` in `.env`.
+
+### Restoring
+
+Stop the app first so nothing writes while you swap the file.
+
+```sh
+# Alpine
+rc-service dinner-log stop
+gunzip -c /var/backups/dinner-log/2026-11-09/meals.db.gz > /var/lib/dinner-log/meals.db
+rm -f /var/lib/dinner-log/meals.db-journal                    # a leftover journal would be replayed onto it
+cp -a <BACKUP_TARGET>/files/dinner-log/photos/. /var/lib/dinner-log/photos/
+chown -R dinnerlog:dinnerlog /var/lib/dinner-log
+rc-service dinner-log start
+
+# Docker (from the folder with docker-compose.yml)
+docker compose stop
+gunzip -c data/backups/2026-11-09/meals.db.gz > data/meals.db
+rm -f data/meals.db-journal
+cp -a <BACKUP_TARGET>/files/dinner-log/photos/. data/photos/
+sudo chown -R 10001:10001 data       # the entrypoint only re-owns ./data when the folder itself isn't 10001's
+docker compose start
+```
+
+Restoring from `BACKUP_TARGET` works the same way with `<BACKUP_TARGET>/db/<day>/dinner-log-meals.db.gz`. Photos the restored database doesn't mention are harmless; they just take space.
+
 ## Recipes from Cookbook Collection
 
 With `COOKBOOK_URL` (or `COOKBOOK_API_URL`) set, the form looks up the cookbook you type in Cookbook Collection's public catalog. If that book's index is there, a **Recipe from this book** field appears listing its recipes. Picking one fills in the page, and the dinner name if it's empty or came from an earlier pick; anything you typed yourself is left alone. The cookbook title is also changed to the catalog's spelling, which helps Cookbook Collection match the dinner to the recipe later.
 
 The browser asks Dinner Log (`/cookbook/recipes?title=…`), and Dinner Log asks Cookbook Collection's public `/api/books` and `/api/books/<id>`, caching each book's recipes for two minutes. No token is needed, and if the catalog is down the field simply doesn't appear.
+
+**Links back.** A dinner picked from the catalog keeps its stable uids, and with `COOKBOOK_URL` set its page, and the Pick for tonight card, link straight to the book and recipe in Cookbook Collection (`<COOKBOOK_URL>/#/uid/<book uid>/<recipe uid>`). Recipes saved from websites are editor-only there, so those links go through `<COOKBOOK_URL>/admin#/uid/…` and ask for the editor login. Dinners without uids (typed by hand, or logged before uids existed) fall back to searching the catalog by name.
 
 ## Pick for tonight
 
@@ -188,7 +252,7 @@ It never replaces a uid that's already set, so running it again is harmless. If 
 
 ## Security: read this before exposing it
 
-**Dinner Log has no authentication.** Anyone who can reach the port can read, add, edit and delete entries. Run it on a trusted network, or put it behind something that handles login, for example:
+**Dinner Log has no login of its own.** Unless you turn on *Verifying Cloudflare Access* below, anyone who can reach the port can read, add, edit and delete entries. Run it on a trusted network, or put it behind something that handles login, for example:
 
 - a VPN such as WireGuard or Tailscale,
 - a reverse proxy with authentication (basic auth, OAuth proxy, etc.),
@@ -197,6 +261,31 @@ It never replaces a uid that's already set, so running it again is harmless. If 
 If you publish it on the internet, make sure the access policy is in place *before* the hostname goes live.
 
 **Don't leave a side door open.** A proxy only protects the traffic that goes through it. If the app listens on all interfaces, anyone on the same network can skip the proxy and talk to it directly. When the proxy or tunnel runs on the same machine, bind to loopback: `DINNER_BIND=127.0.0.1` with the Alpine installer, or `"127.0.0.1:8000:8000"` under `ports:` in `docker-compose.yml`. When it runs elsewhere, firewall the port so only the proxy can reach it.
+
+### Verifying Cloudflare Access
+
+If Cloudflare Access is your login, Dinner Log can check Access's signed token itself, so the side door stays shut even if the app is reachable around the tunnel (a LAN client, a port left open, an Access application that doesn't cover every path). Set both:
+
+```sh
+# /etc/conf.d/dinner-log (Alpine) or .env (Docker)
+export CF_TEAM_DOMAIN=yourteam.cloudflareaccess.com   # your Zero Trust team domain
+export CF_AUD=<Application Audience (AUD) tag>         # on the Access application's overview
+```
+
+Then restart. Every request, including the service worker, manifest and icons, must carry a valid `Cf-Access-Jwt-Assertion` (Access adds it to every request it lets through): signed by your team's current key, for this application's AUD, not expired. Anything else gets a short 403 page; the reason is in the log (`/var/log/dinner-log.log`), e.g. `Access refused: GET / from 192.168.1.20: no Access token (LAN_ACCESS is off)`.
+
+- **Unset, nothing changes.** With only one of the two set, the app refuses to start rather than run unprotected; likewise if PyJWT is missing (the Alpine installer adds `py3-jwt py3-cryptography`; Docker gets it from `requirements.txt`).
+- **Exceptions.** `/api/history` is called by Cookbook Collection with its bearer token instead, and checks that token itself. `/healthz` answers `ok` to anyone, for health checks; it says nothing else.
+- **Signing keys** come from `https://<team domain>/cdn-cgi/access/certs` and are cached. A token naming an unknown key triggers at most one fetch a minute, so junk tokens can't make the app hammer Cloudflare; if a fetch fails, the keys it already has keep working.
+- **Clock.** Up to a minute of clock difference with Cloudflare is tolerated. More than that and fresh sign-ins are refused as "issued in the future"; keep the server's time synced.
+
+**Using it directly on the home network.** With `LAN_ACCESS=1`, a request that didn't come through Cloudflare is let in when:
+
+- the connecting address is in `LAN_CIDRS` (default: loopback and private ranges). Only the socket's address counts; forwarded headers are ignored;
+- the URL uses an IP address (`http://192.168.1.5:8000`) or a name listed in `LAN_HOSTS`. This blocks DNS rebinding, where a web page re-points its own name at your server;
+- it carries no Access token and no Cloudflare headers. A token that fails, or a request that came through the tunnel without one, is refused, never treated as LAN. This matters when `cloudflared` runs on the same machine: its connections come from `127.0.0.1`.
+
+`LAN_ACCESS` means "anyone who can reach the port from those networks", so keep it off on networks you don't trust. **Under Docker**, check the address the app sees before relying on it: rootless Docker and Podman (and connections to a published port from the host itself) can show every client as one internal address, which would let everyone in. Leave it off there, or bind the port to loopback.
 
 **Cross-site requests.** Because login lives in the proxy's cookie, the app refuses POSTs that browsers mark as coming from another site, including sibling subdomains (`Sec-Fetch-Site: cross-site` or `same-site`). This check doesn't depend on the `Host` header, so it works behind proxies that rewrite it (nginx does by default). For browsers that don't send that header, it falls back to comparing `Origin` with `Host` / `X-Forwarded-Host`. To let a specific sibling site post, list its origin in `TRUSTED_ORIGINS` (e.g. `https://other.example.com`).
 
