@@ -80,7 +80,7 @@
     <div class="thumbs">
       {% for p in photos %}
         <label class="thumb">
-          <img src="{{ url_for('photo', filename=p.filename) }}" alt="">
+          <img src="{{ url_for('photo', filename=thumb_file(p.filename)) }}" alt="">
           <input type="checkbox" name="delete_photo" value="{{ p.id }}"><span>Remove</span>
         </label>
       {% endfor %}

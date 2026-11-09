@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from flask import (Flask, abort, g, redirect, render_template, request,
                    send_from_directory, url_for)
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, JpegImagePlugin, UnidentifiedImageError
 
 DATA_DIR = os.environ.get("DATA_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "data"))
 PHOTO_DIR = os.path.join(DATA_DIR, "photos")
@@ -46,7 +46,16 @@ def _load_tz(name):
 
 APP_TZ = _load_tz(os.environ.get("APP_TZ"))
 MAX_PHOTO_EDGE = 1600  # phone photos are huge; downscale to keep storage sane
+THUMB_EDGE = 480  # feed cards and the edit form show this size; the detail gallery keeps the full image
 MAX_DECODE_PIXELS = 40_000_000  # after JPEG draft scaling; ~120 MB as RGB
+# The only formats uploads may be in. Pillow's other decoders (PSD, FITS, BMP, TIFF, ...) have had
+# memory-safety bugs and nothing here needs them. HEIF is only offered when a HEIF plugin is registered.
+IMAGE_FORMATS = ("JPEG", "PNG", "WEBP", "HEIF")
+try:  # iPhone HEIC photos, when the optional pillow-heif package is installed
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 
 def local_today(now=None):
     """Today's date in the household's time zone, not the server's (usually UTC)."""
@@ -350,42 +359,104 @@ with sqlite3.connect(DB_PATH) as _c:
             _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} TEXT")
 
 
-def save_photos(meal_id, files):
-    """Downscale and store uploads. Returns how many files were skipped.
+def image_formats():
+    """IMAGE_FORMATS that this Pillow build can actually decode (WebP and HEIF are optional)."""
+    Image.init()
+    return [f for f in IMAGE_FORMATS if f in Image.OPEN]
 
-    Pixels are checked from the header before anything is decoded, and JPEGs
-    are decoded at reduced scale (draft), so a huge or hostile image can't
-    exhaust a small container's memory. EXIF (including GPS) is not carried
-    over to the saved JPEG; orientation is applied to the pixels first.
+
+def supported_formats_label():
+    """"JPEG, PNG and WebP" (plus HEIC when pillow-heif is installed), for the skipped-photos notice."""
+    names = {"JPEG": "JPEG", "PNG": "PNG", "WEBP": "WebP", "HEIF": "HEIC"}
+    got = [names[f] for f in image_formats()]
+    return ", ".join(got[:-1]) + " and " + got[-1]
+
+
+def open_image(stream):
+    """Open an upload as one of IMAGE_FORMATS; anything else is a ValueError. Reads the header only."""
+    try:
+        return Image.open(stream, formats=image_formats())
+    except UnidentifiedImageError:
+        raise ValueError("not a JPEG, PNG, WebP or HEIC image") from None
+
+
+def load_photo(stream):
+    """Decode an upload into an upright RGB image no larger than MAX_PHOTO_EDGE.
+
+    Pixels are checked from the header before anything is decoded, and JPEGs are decoded at reduced scale
+    (draft), so a huge or hostile image can't exhaust a small container's memory. Raises on anything
+    unreadable, refused or too large. EXIF is not carried over; orientation is applied to the pixels.
     """
+    img = open_image(stream)
+    # isinstance, not img.format: Pillow reports JPEGs with a multi-picture index (many Android
+    # cameras) as "MPO", and those must be draft-decoded too.
+    if isinstance(img, JpegImagePlugin.JpegImageFile):
+        img.draft("RGB", (MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
+    if img.width * img.height > MAX_DECODE_PIXELS:
+        raise ValueError("image too large to decode safely")
+    img = ImageOps.exif_transpose(img).convert("RGB")
+    img.thumbnail((MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
+    return img
+
+
+def thumb_name(filename):
+    """Where a photo's thumbnail lives: x.jpg -> x-t.jpg (derived, so no database column)."""
+    return os.path.splitext(filename)[0] + "-t.jpg"
+
+
+def write_thumb(img, filename):
+    """Write the THUMB_EDGE thumbnail of an already-decoded photo beside it, atomically.
+
+    Nothing is passed to save(), so EXIF and ICC data are dropped here too."""
+    thumb = img.copy()
+    thumb.thumbnail((THUMB_EDGE, THUMB_EDGE))
+    path = os.path.join(PHOTO_DIR, thumb_name(filename))
+    tmp = path + ".tmp"
+    try:
+        thumb.save(tmp, "JPEG", quality=80, optimize=True)
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+@app.template_global()
+def thumb_file(filename):
+    """The thumbnail's file name, or the full image's while no thumbnail exists yet (older photos until
+    backfill_thumbs has run). The URL differs between the two, so the long immutable cache stays correct."""
+    thumb = thumb_name(filename)
+    return thumb if os.path.isfile(os.path.join(PHOTO_DIR, thumb)) else filename
+
+
+def save_photos(meal_id, files):
+    """Downscale and store uploads. Returns how many files were skipped."""
     skipped = 0
     for f in files:
         if not f or not f.filename:
             continue
         try:
-            img = Image.open(f.stream)
-            if img.format == "JPEG":
-                img.draft("RGB", (MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
-            if img.width * img.height > MAX_DECODE_PIXELS:
-                raise ValueError("image too large to decode safely")
-            img = ImageOps.exif_transpose(img).convert("RGB")
+            img = load_photo(f.stream)
         except Exception as exc:
             app.logger.info("Skipped photo %r: %s", f.filename, exc)
             skipped += 1
             continue
-        img.thumbnail((MAX_PHOTO_EDGE, MAX_PHOTO_EDGE))
         name = uuid.uuid4().hex + ".jpg"
         img.save(os.path.join(PHOTO_DIR, name), "JPEG", quality=85, optimize=True)
+        try:
+            write_thumb(img, name)
+        except OSError as exc:  # the full photo is saved; pages fall back to it until backfill_thumbs runs
+            app.logger.warning("Couldn't write thumbnail for %s: %s", name, exc)
         db().execute("INSERT INTO photos (meal_id, filename) VALUES (?, ?)", (meal_id, name))
     return skipped
 
 
 def remove_photo_files(names):
     for n in names:
-        try:
-            os.remove(os.path.join(PHOTO_DIR, n))
-        except FileNotFoundError:
-            pass
+        for f in (n, thumb_name(n)):
+            try:
+                os.remove(os.path.join(PHOTO_DIR, f))
+            except FileNotFoundError:
+                pass
 
 
 CATALOG_SOURCES = ("cookbook", "online")
@@ -982,7 +1053,8 @@ def meal_detail(meal_id):
     meal, photos = get_meal(meal_id)
     skipped = request.args.get("skipped", "")
     return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES,
-                           skipped=int(skipped) if skipped.isdigit() else 0)
+                           skipped=int(skipped) if skipped.isdigit() else 0,
+                           supported_formats=supported_formats_label())
 
 
 @app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])
@@ -1027,7 +1099,7 @@ def delete_meal(meal_id):
 @app.route("/photos/<path:filename>")
 def photo(filename):
     resp = send_from_directory(PHOTO_DIR, filename)
-    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
     return resp
 
 

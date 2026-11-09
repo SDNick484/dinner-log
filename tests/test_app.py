@@ -45,7 +45,7 @@ def test_create_with_photo_and_view(client, tmp_path):
     assert r.status_code == 302
     page = text(client.get(r.headers["Location"]))
     assert "Pad thai" in page and "Thai Food" in page and "p. 88" in page
-    photos = os.listdir(tmp_path / "photos")
+    photos = [n for n in os.listdir(tmp_path / "photos") if not n.endswith("-t.jpg")]
     assert len(photos) == 1                      # the non-image upload is skipped
     assert Image.open(tmp_path / "photos" / photos[0]).size == (1600, 1200)  # downscaled
 
@@ -84,7 +84,7 @@ def test_search(client):
 def test_remove_photo_and_delete(client, tmp_path):
     loc = client.post("/new", data={"name": "Stew", "photos": [(jpeg((800, 600)), "a.jpg")]},
                       content_type="multipart/form-data").headers["Location"]
-    assert len(os.listdir(tmp_path / "photos")) == 1
+    assert len(os.listdir(tmp_path / "photos")) == 2     # the photo and its thumbnail
     client.post(loc + "/edit", data={"name": "Stew", "delete_photo": "1"},
                 content_type="multipart/form-data")
     assert os.listdir(tmp_path / "photos") == []
