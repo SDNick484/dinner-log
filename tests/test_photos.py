@@ -17,7 +17,7 @@ def jpeg_with(size=(4000, 3000), exif=None):
 
 def saved_photos(tmp_path):
     d = tmp_path / "photos"
-    return [Image.open(d / n) for n in sorted(os.listdir(d))]
+    return [Image.open(d / n) for n in sorted(os.listdir(d)) if not n.endswith("-t.jpg")]
 
 
 @pytest.fixture(params=["with_heif", "without_heif"])

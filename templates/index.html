@@ -116,7 +116,7 @@
   <li>
     <a class="card" href="{{ url_for('meal_detail', meal_id=m.id) }}">
       {% if m.thumb %}
-        <img src="{{ url_for('photo', filename=m.thumb) }}" alt="" loading="lazy">
+        <img src="{{ url_for('photo', filename=thumb_file(m.thumb)) }}" alt="" loading="lazy">
       {% else %}
         <div class="noimg">🍲</div>
       {% endif %}
