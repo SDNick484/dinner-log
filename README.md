@@ -73,6 +73,16 @@ It unpacks the app to a temporary folder and runs the same `deploy/install-alpin
 
 Uploads are decoded only as JPEG, PNG or WebP (and HEIC when the optional `pillow-heif` package is installed). Pillow's other decoders are never used on uploads, and anything else, or an image over about 40 megapixels once decoded, is skipped and reported on the dinner's page. Each accepted photo is re-encoded as a JPEG with no EXIF, so phone location data is dropped, and saved as `<id>.jpg` (1600 px long edge) in `photos/`, with a 480 px thumbnail `<id>-t.jpg` beside it. The feed and the edit form show the thumbnail; a dinner's own page shows the full image. If a thumbnail is missing, the full image is shown instead. Photos are served with `Cache-Control: private, max-age=31536000, immutable` (their names never change), so a browser keeps them for a year but a shared cache or CDN in front of the app won't.
 
+### HEIC photos (optional)
+
+Phones that save HEIC (some iPhone and Samsung settings) need the optional [`pillow-heif`](https://pypi.org/project/pillow-heif/) package. Without it HEIC uploads are skipped with a notice that lists the formats the server does accept, and Safari normally converts to JPEG on upload anyway. It bundles libheif and ships musl wheels (x86_64 and aarch64), so it installs on Alpine without a compiler. Because that copy of libheif isn't patched through your package manager, update `pillow-heif` when it releases fixes. HEIC is also capped by the 40 megapixel limit above, and HEIC can't be decoded at reduced size like JPEG, so a 48 MP HEIC is refused.
+
+- **Docker:** included in the image. Build with `--build-arg HEIC=0` to leave it out; where no wheel exists for the platform the build continues without it.
+- **Alpine installer:** `DINNER_HEIC=1 sh deploy/install-alpine.sh` (or the one-file installer) installs it into `/opt/dinner-log/vendor` without dependencies, checks that it can really decode, and sets `PYTHONPATH` in `/etc/conf.d/dinner-log`. It needs Alpine's `py3-pillow` to be 11.1 or newer; if the check fails, the installer says so and carries on without HEIC. Re-run with `DINNER_HEIC=1` to update it; without the variable an existing install is kept.
+- **A checkout:** `pip install -r deploy/requirements-heic.txt`.
+
+Alpine also packages it as `py3-pillow_heif`, but only in the `testing` repository, so the wheel is the better route.
+
 ### Thumbnails for older photos
 
 Photos uploaded before thumbnails existed have none until you run `backfill_thumbs`. It writes the missing ones from the stored 1600 px image, prints one line per photo and a total, and leaves existing thumbnails alone, so running it again changes nothing. A photo whose file is missing or unreadable is reported, the rest are still done, and the exit status is 1. Dry run first:

@@ -67,3 +67,22 @@ def test_header_unpacks_and_runs_from_any_cwd(built, tmp_path):
     tmp = r.stdout.split("TMP=", 1)[1].split("\n", 1)[0]
     assert set(r.stdout.split("\n", 1)[1].split()) == {"app.py", "backfill_uids.py", "backfill_thumbs.py", "templates", "static", "deploy"}
     assert not os.path.exists(tmp)                                       # cleaned up on exit
+
+
+def test_installer_script_is_valid_sh_and_ships_the_heic_requirements(built):
+    _, tar = payload(built)
+    assert "dinner-log/deploy/requirements-heic.txt" in tar.getnames()
+    script = tar.extractfile("dinner-log/deploy/install-alpine.sh").read()
+    assert subprocess.run(["sh", "-n"], input=script, capture_output=True).returncode == 0
+    assert b"DINNER_HEIC" in script
+
+
+def test_every_top_level_module_is_shipped_by_each_deploy_path():
+    """A new top-level .py file must be added to the Dockerfile and both installer copy lists."""
+    modules = sorted(f for f in os.listdir(ROOT) if f.endswith(".py"))
+    assert "app.py" in modules and "backfill_thumbs.py" in modules
+    for rel in ("Dockerfile", "deploy/build.sh", "deploy/install-alpine.sh"):
+        with open(os.path.join(ROOT, rel)) as fh:
+            body = fh.read()
+        missing = [m for m in modules if m not in body]
+        assert not missing, f"{rel} doesn't ship {missing}"

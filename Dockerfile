@@ -5,8 +5,16 @@ WORKDIR /app
 RUN apk add --no-cache su-exec \
  && addgroup -S -g 10001 dinnerlog \
  && adduser -S -D -H -u 10001 -G dinnerlog dinnerlog
-COPY requirements.txt .
+COPY requirements.txt ./
+COPY deploy/requirements-heic.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
+# Optional HEIC support (iPhone photos). pillow-heif bundles libheif and ships musl wheels for x86_64 and
+# aarch64; where there is no wheel the build carries on without it. Skip it with --build-arg HEIC=0.
+ARG HEIC=1
+RUN if [ "$HEIC" = 1 ]; then \
+      pip install --no-cache-dir --only-binary=:all: -r requirements-heic.txt \
+      || echo "pillow-heif has no wheel for this platform; HEIC photos stay unsupported"; \
+    fi
 COPY app.py backfill_uids.py backfill_thumbs.py ./
 COPY templates ./templates
 COPY static ./static

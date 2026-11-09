@@ -1,0 +1,3 @@
+# Optional: lets Dinner Log accept iPhone HEIC photos. Installed in the Docker image unless built with
+# --build-arg HEIC=0. Without it HEIC uploads are refused with a notice; nothing else changes.
+pillow-heif>=1.0

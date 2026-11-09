@@ -4,6 +4,7 @@
 #   DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh deploy/install-alpine.sh
 #
 # - installs python3, flask, pillow and gunicorn from Alpine packages
+# - with DINNER_HEIC=1, also installs pillow-heif (HEIC photos) from its musl wheel into $APP_DIR/vendor
 # - copies the app to /opt/dinner-log
 # - keeps the database and photos in /var/lib/dinner-log (never touched on upgrade)
 # - runs as an unprivileged "dinnerlog" user via an OpenRC service
@@ -32,6 +33,33 @@ mkdir -p "$APP_DIR" "$DATA_DIR"
 echo "==> Copying app to $APP_DIR"
 rm -rf "$APP_DIR/app.py" "$APP_DIR/backfill_uids.py" "$APP_DIR/backfill_thumbs.py" "$APP_DIR/templates" "$APP_DIR/static"
 cp -r "$SRC/app.py" "$SRC/backfill_uids.py" "$SRC/backfill_thumbs.py" "$SRC/templates" "$SRC/static" "$APP_DIR/"
+
+if [ "${DINNER_HEIC:-}" = 1 ]; then
+    # Optional: pillow-heif bundles libheif, so it isn't patched through apk; re-run with DINNER_HEIC=1 to
+    # update it. Installed next to the app (not into the system Python) and without dependencies, so Alpine's
+    # py3-pillow stays the only Pillow. Without DINNER_HEIC an existing vendor/ is kept as it is.
+    echo "==> Installing HEIC support (pillow-heif)"
+    if apk add --no-cache py3-pip >/dev/null 2>&1 \
+        && pip install --quiet --no-cache-dir --break-system-packages --no-deps --only-binary=:all: \
+            --target "$APP_DIR/vendor.new" -r "$SRC/deploy/requirements-heic.txt" \
+        && PYTHONPATH="$APP_DIR/vendor.new" python3 -c "
+import io, pillow_heif
+from PIL import Image
+pillow_heif.register_heif_opener()
+b = io.BytesIO()
+Image.new('RGB', (16, 16)).save(b, 'HEIF')
+b.seek(0)
+Image.open(b).load()
+"; then
+        rm -rf "$APP_DIR/vendor"
+        mv "$APP_DIR/vendor.new" "$APP_DIR/vendor"
+    else
+        rm -rf "$APP_DIR/vendor.new"
+        echo "Couldn't install a working pillow-heif (needs a musl wheel and Alpine's Pillow 11.1 or newer);" >&2
+        echo "continuing without HEIC support." >&2
+    fi
+fi
+
 chown -R root:root "$APP_DIR"
 chown -R dinnerlog:dinnerlog "$DATA_DIR"
 chmod 750 "$DATA_DIR"
@@ -58,6 +86,9 @@ set_conf DINNER_PORT "${DINNER_PORT:-}" "Port Dinner Log listens on" 8000
 set_conf DINNER_BIND "${DINNER_BIND:-}" \
     "Address to bind; use 127.0.0.1 when the reverse proxy/tunnel runs on this host" 0.0.0.0
 set_conf "export DATA_DIR" "" "Database and photos" "$DATA_DIR"
+if [ -d "$APP_DIR/vendor" ]; then
+    set_conf "export PYTHONPATH" "$APP_DIR/vendor" "pillow-heif for HEIC photos (installed by DINNER_HEIC=1)" ""
+fi
 set_conf "export APP_TZ" "${DINNER_TZ:-}" "IANA time zone used for \"today\" (e.g. America/Chicago)" UTC
 set_conf "export COOKBOOK_URL" "" "Cookbook Collection's public address, for links (optional)" ""
 set_conf "export COOKBOOK_API_URL" "" "Cookbook Collection's private address, e.g. http://127.0.0.1:8767 (optional)" ""
