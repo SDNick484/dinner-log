@@ -73,6 +73,66 @@ jobs:
           CI_ALLOW_SKIP: ${{ !matrix.heic && env.HEIC_SKIPS || '' }}
         run: python -m pytest -q
 
+  alpine:
+    # Installs with the real installer on Alpine, runs the suite on Alpine's Python packages, and checks the
+    # OpenRC service the way production runs it (see .github/scripts/).
+    name: alpine ${{ matrix.alpine }}${{ matrix.heic && ', HEIC' || '' }}${{ matrix.experimental && ' (non-blocking)' || '' }}
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    container:
+      image: alpine:${{ matrix.alpine }}
+      # An init as PID 1 that reaps orphans, as the LXC's init does. Without it the job container's PID 1 is
+      # `tail -f /dev/null`, a stopped gunicorn stays a zombie, and start-stop-daemon reports it never stopped.
+      options: --init
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The release production runs. Keep it in step with the server.
+          - { alpine: "3.24", heic: false, experimental: false }
+          - { alpine: "3.24", heic: true, experimental: false }
+          # The next upgrade: shows apk changes early without blocking.
+          - { alpine: latest, heic: false, experimental: true }
+          - { alpine: latest, heic: true, experimental: true }
+    env:
+      DINNER_HEIC: ${{ matrix.heic && '1' || '' }}
+    steps:
+      - name: Install test tools (the app's packages come from the installer)
+        run: apk add --no-cache git curl
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Trust the checkout (owned by the runner's user; git ls-files needs it for the hygiene test)
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Let OpenRC run services in this container
+        run: sh .github/scripts/openrc-container.sh
+      - name: Build the installer (needs python3, like the machine you build on)
+        run: |
+          apk add --no-cache python3
+          sh deploy/build.sh
+      - name: Install
+        run: DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh dist/setup-dinner-log.sh
+      - name: Strict test suite on Alpine's Python
+        run: |
+          apk add --no-cache py3-pytest
+          if [ "$DINNER_HEIC" = 1 ]; then
+            # The installer's pillow-heif (in /opt/dinner-log/vendor), on the PYTHONPATH it gave the service.
+            PYTHONPATH=$(. /etc/conf.d/dinner-log && echo "${PYTHONPATH:-}")
+            [ -n "$PYTHONPATH" ] || { echo "the installer set no PYTHONPATH for pillow-heif" >&2; exit 1; }
+            export PYTHONPATH
+          else
+            export CI_ALLOW_SKIP="$HEIC_SKIPS"
+          fi
+          python3 --version
+          python3 -m pytest -q
+      - name: Check the installed service
+        run: sh .github/scripts/check-installed.sh
+      - name: Logs
+        if: failure()
+        run: |
+          tail -n 60 /var/log/dinner-log.log || true
+          tail -n 20 /var/log/dinner-log-backup.log || true
+          grep -v -e HISTORY_TOKEN -e COOKBOOK_TOKEN /etc/conf.d/dinner-log || true
+
   docker:
     name: docker image
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
