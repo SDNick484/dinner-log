@@ -13,8 +13,9 @@
   <div class="src">
     <span class="chip {{ meal.source_type }}">{{ types[meal.source_type] }}</span>
     {% if meal.source_title %}
-      {% if meal.source_type == 'cookbook' and cookbook_url %}
-        <a class="ext-link" href="{{ meal.source_title | cookbook_search_url }}" target="_blank" rel="noopener noreferrer"><b>{{ meal.source_title }}</b> ↗</a>
+      {% set book_url = catalog_url(meal) or (meal.source_title | cookbook_search_url if meal.source_type == 'cookbook' else '') %}
+      {% if book_url %}
+        <a class="ext-link" href="{{ book_url }}" target="_blank" rel="noopener noreferrer"><b>{{ meal.source_title }}</b> ↗</a>
       {% else %}
         <b>{{ meal.source_title }}</b>
       {% endif %}
@@ -26,7 +27,12 @@
         · {{ meal.source_detail }}
       {% endif %}
     {% endif %}
-    {% if meal.source_type == 'cookbook' and cookbook_url %}
+    {% set recipe_url = catalog_url(meal, recipe=True) %}
+    {% if recipe_url %}
+      <div class="cookbook-links">
+        <a class="ext-link" href="{{ recipe_url }}" target="_blank" rel="noopener noreferrer">Open recipe in Cookbook Collection{{ ' (editor)' if meal.source_type == 'online' }} ↗</a>
+      </div>
+    {% elif meal.source_type == 'cookbook' and cookbook_url %}
       <div class="cookbook-links">
         <a class="ext-link" href="{{ meal.name | cookbook_search_url }}" target="_blank" rel="noopener noreferrer">Search recipe in Cookbook Collection ↗</a>
       </div>
@@ -46,6 +52,8 @@
     {% endfor %}
   </div>
   {% endif %}
+
+  <a class="btn another" href="{{ url_for('new_meal', day=meal.day) }}">+ Another dish for this dinner</a>
 
   <form method="post" action="{{ url_for('delete_meal', meal_id=meal.id) }}"
         onsubmit="return confirm('Delete this dinner and its photos?');">

@@ -75,6 +75,8 @@ With `COOKBOOK_URL` (or `COOKBOOK_API_URL`) set, the form looks up the cookbook 
 
 The browser asks Dinner Log (`/cookbook/recipes?title=…`), and Dinner Log asks Cookbook Collection's public `/api/books` and `/api/books/<id>`, caching each book's recipes for two minutes. No token is needed, and if the catalog is down the field simply doesn't appear.
 
+**Links back.** A dinner picked from the catalog keeps its stable uids, and with `COOKBOOK_URL` set its page, and the Pick for tonight card, link straight to the book and recipe in Cookbook Collection (`<COOKBOOK_URL>/#/uid/<book uid>/<recipe uid>`). Recipes saved from websites are editor-only there, so those links go through `<COOKBOOK_URL>/admin#/uid/…` and ask for the editor login. Dinners without uids (typed by hand, or logged before uids existed) fall back to searching the catalog by name.
+
 ## Pick for tonight
 
 **🎲 Pick for tonight** suggests a dinner. **Options ▾** next to it sets:

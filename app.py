@@ -285,11 +285,39 @@ def filter_cookbook_search_url(query):
     return cookbook_search_url(query)
 
 
+def cookbook_uid_url(book_uid, recipe_uid=None, online=False):
+    """A deep link into Cookbook Collection by stable uid: its `#/uid/<book>[/<recipe>]` route, which
+    resolves the uid and opens the book (highlighting the recipe). Recipe websites (`kind='online'`) are
+    editor-only there, so those links go through `/admin`. "" when there is no COOKBOOK_URL or no valid
+    book uid. Only validated hex ever reaches the URL."""
+    book_uid = parse_cookbook_uid(book_uid)
+    if not COOKBOOK_URL or not book_uid:
+        return ""
+    recipe_uid = parse_cookbook_uid(recipe_uid)
+    path = f"{book_uid}/{recipe_uid}" if recipe_uid else book_uid
+    return f"{COOKBOOK_URL}{'/admin' if online else '/'}#/uid/{path}"
+
+
+def catalog_url(item, recipe=False):
+    """The uid link for a meal row or a pick (dict), or "" when it carries no book uid, so the caller keeps
+    its name search. recipe=True asks for the recipe-level link: "" unless the item has a recipe uid too."""
+    def get(key):
+        try:
+            return item[key]
+        except (KeyError, IndexError):
+            return None
+    if recipe and not parse_cookbook_uid(get("cookbook_recipe_uid")):
+        return ""
+    return cookbook_uid_url(get("cookbook_book_uid"), get("cookbook_recipe_uid") if recipe else None,
+                            online=get("source_type") == "online")
+
+
 @app.context_processor
 def inject_cookbook_config():
     return {
         "cookbook_url": COOKBOOK_URL,
         "cookbook_search_url": cookbook_search_url,
+        "catalog_url": catalog_url,
     }
 
 
