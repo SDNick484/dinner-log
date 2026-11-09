@@ -4,6 +4,8 @@
 <form method="post" enctype="multipart/form-data" class="form">
   <input type="hidden" name="cookbook_book_id" id="cookbook-book-id" value="{{ meal['cookbook_book_id'] or '' }}">
   <input type="hidden" name="cookbook_recipe_id" id="cookbook-recipe-id" value="{{ meal['cookbook_recipe_id'] or '' }}">
+  <input type="hidden" name="cookbook_book_uid" id="cookbook-book-uid" value="{{ meal['cookbook_book_uid'] or '' }}">
+  <input type="hidden" name="cookbook_recipe_uid" id="cookbook-recipe-uid" value="{{ meal['cookbook_recipe_uid'] or '' }}">
   <h1>{{ 'Edit dinner' if editing else 'Log a dinner' }}</h1>
 
   <label>Day
@@ -140,7 +142,9 @@
   // forget them, and Cookbook Collection falls back to matching by title and page.
   const bookIdInput = document.getElementById('cookbook-book-id');
   const recipeIdInput = document.getElementById('cookbook-recipe-id');
-  function clearIds() { bookIdInput.value = ''; recipeIdInput.value = ''; }
+  const bookUidInput = document.getElementById('cookbook-book-uid');
+  const recipeUidInput = document.getElementById('cookbook-recipe-uid');
+  function clearIds() { bookIdInput.value = recipeIdInput.value = bookUidInput.value = recipeUidInput.value = ''; }
   [nameInput, titleInput, detailInput].forEach(el => el.addEventListener('input', clearIds));
   form.querySelectorAll('input[name=source_type]').forEach(r => r.addEventListener('change', clearIds));
 

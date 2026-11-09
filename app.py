@@ -67,7 +67,9 @@ CREATE TABLE IF NOT EXISTS meals (
     rating INTEGER CHECK (rating BETWEEN 1 AND 10),  -- NULL = not rated
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     cookbook_book_id INTEGER,                -- Cookbook Collection books.id, when picked from its catalog
-    cookbook_recipe_id INTEGER               -- Cookbook Collection recipes.id
+    cookbook_recipe_id INTEGER,              -- Cookbook Collection recipes.id
+    cookbook_book_uid TEXT,                  -- Cookbook Collection books.uid (stable; ids can be reused)
+    cookbook_recipe_uid TEXT                 -- Cookbook Collection recipes.uid
 );
 CREATE TABLE IF NOT EXISTS photos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -140,6 +142,10 @@ with sqlite3.connect(DB_PATH) as _c:
     for _col in ("cookbook_book_id", "cookbook_recipe_id"):
         if _col not in _cols:
             _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} INTEGER")
+    # ...and before they carried its stable uids. Existing rows get NULL; backfill_uids fills them.
+    for _col in ("cookbook_book_uid", "cookbook_recipe_uid"):
+        if _col not in _cols:
+            _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} TEXT")
 
 
 def save_photos(meal_id, files):
@@ -193,6 +199,15 @@ def parse_cookbook_id(raw):
     return n if 0 < n <= SQLITE_INT_MAX else None
 
 
+UID_RE = re.compile(r"[0-9a-f]{32}")
+
+
+def parse_cookbook_uid(raw):
+    """A Cookbook Collection uid (32 lowercase hex characters), else None."""
+    raw = str(raw if raw is not None else "").strip().lower()
+    return raw if UID_RE.fullmatch(raw) else None
+
+
 def parse_meal_params(params, default_source="cookbook"):
     if "source_type" in params:
         stype = str(params.get("source_type") or "")
@@ -218,6 +233,8 @@ def parse_meal_params(params, default_source="cookbook"):
         # Only meals from Cookbook Collection's catalog keep its ids.
         "cookbook_book_id": parse_cookbook_id(params.get("cookbook_book_id")) if stype in CATALOG_SOURCES else None,
         "cookbook_recipe_id": parse_cookbook_id(params.get("cookbook_recipe_id")) if stype in CATALOG_SOURCES else None,
+        "cookbook_book_uid": parse_cookbook_uid(params.get("cookbook_book_uid")) if stype in CATALOG_SOURCES else None,
+        "cookbook_recipe_uid": parse_cookbook_uid(params.get("cookbook_recipe_uid")) if stype in CATALOG_SOURCES else None,
     }
 
 
@@ -697,8 +714,9 @@ def new_meal():
         v = form_values()
         cur = db().execute(
             "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating, "
-            "cookbook_book_id, cookbook_recipe_id) VALUES (:day, :name, :source_type, :source_title, "
-            ":source_detail, :notes, :rating, :cookbook_book_id, :cookbook_recipe_id)", v)
+            "cookbook_book_id, cookbook_recipe_id, cookbook_book_uid, cookbook_recipe_uid) "
+            "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating, "
+            ":cookbook_book_id, :cookbook_recipe_id, :cookbook_book_uid, :cookbook_recipe_uid)", v)
         skipped = save_photos(cur.lastrowid, request.files.getlist("photos"))
         db().commit()
         return redirect(url_for("meal_detail", meal_id=cur.lastrowid, skipped=skipped or None))
@@ -733,8 +751,8 @@ def edit_meal(meal_id):
         db().execute(
             "UPDATE meals SET day=:day, name=:name, source_type=:source_type, "
             "source_title=:source_title, source_detail=:source_detail, notes=:notes, "
-            "rating=:rating, cookbook_book_id=:cookbook_book_id, cookbook_recipe_id=:cookbook_recipe_id "
-            "WHERE id=:id", v)
+            "rating=:rating, cookbook_book_id=:cookbook_book_id, cookbook_recipe_id=:cookbook_recipe_id, "
+            "cookbook_book_uid=:cookbook_book_uid, cookbook_recipe_uid=:cookbook_recipe_uid WHERE id=:id", v)
         drop = [int(x) for x in request.form.getlist("delete_photo") if x.isdigit()]
         names = []
         if drop:
@@ -771,8 +789,10 @@ def photo(filename):
 
 
 HISTORY_VERSION = 1
+# Version 1 grew the two uid fields without a bump: they are additive, and Cookbook Collection releases from
+# before them accept only version 1 and ignore keys they don't know. Bump only for a breaking change.
 HISTORY_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_detail", "rating",
-                  "cookbook_book_id", "cookbook_recipe_id")
+                  "cookbook_book_id", "cookbook_recipe_id", "cookbook_book_uid", "cookbook_recipe_uid")
 
 
 def history_rows(con):
@@ -781,7 +801,8 @@ def history_rows(con):
     return [dict(zip(HISTORY_FIELDS, r)) for r in con.execute(
         f"SELECT {', '.join(HISTORY_FIELDS)} FROM meals "
         "WHERE source_type IN ('cookbook', 'online') OR source_detail LIKE '%://%' OR source_title LIKE '%://%' "
-        "OR cookbook_book_id IS NOT NULL OR cookbook_recipe_id IS NOT NULL ORDER BY id")]
+        "OR cookbook_book_id IS NOT NULL OR cookbook_recipe_id IS NOT NULL "
+        "OR cookbook_book_uid IS NOT NULL OR cookbook_recipe_uid IS NOT NULL ORDER BY id")]
 
 
 @app.route("/api/history")
