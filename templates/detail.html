@@ -5,7 +5,7 @@
 <article class="detail">
   {% if skipped %}
   <p class="notice" role="status">{{ skipped }} photo{{ 's' if skipped != 1 }} couldn’t be read and {{ 'were' if skipped != 1 else 'was' }} skipped.
-    HEIC and very large images aren’t supported; set the camera to JPEG or share a smaller copy.</p>
+    Only {{ supported_formats }} photos are supported here, and very large images are refused; set the camera to JPEG or share a smaller copy.</p>
   {% endif %}
   <div class="day">{{ meal.day | pretty_day }}, {{ meal.day[:4] }}</div>
   <h1>{{ meal.name }}</h1>

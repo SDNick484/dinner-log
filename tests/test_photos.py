@@ -20,14 +20,70 @@ def saved_photos(tmp_path):
     return [Image.open(d / n) for n in sorted(os.listdir(d))]
 
 
-def test_unreadable_photo_is_reported_not_silently_dropped(tmp_path):
-    c = load_app(tmp_path).app.test_client()
+@pytest.fixture(params=["with_heif", "without_heif"])
+def heif_mode(request, monkeypatch):
+    """Run a test with the HEIF decoder registered and again with it removed, whatever is installed."""
+    if request.param == "with_heif":
+        pytest.importorskip("pillow_heif")
+        return True
+    # load_app() re-imports the app, which re-registers pillow_heif, so tests unregister after it
+    return False
+
+
+def app_for(tmp_path, heif, monkeypatch):
+    a = load_app(tmp_path)
+    if not heif:
+        monkeypatch.delitem(Image.OPEN, "HEIF", raising=False)
+    return a
+
+
+def test_unreadable_photo_is_reported_not_silently_dropped(tmp_path, heif_mode, monkeypatch):
+    # A file that claims to be HEIC but isn't decodable is skipped and counted with or without pillow-heif.
+    c = app_for(tmp_path, heif_mode, monkeypatch).app.test_client()
     heic = io.BytesIO(b"\x00\x00\x00\x18ftypheic" + b"\x00" * 64)
     resp = c.post("/new", data={"name": "Tacos", "photos": [(heic, "IMG_0001.heic"), (jpeg_with(), "ok.jpg")]},
                   follow_redirects=True)
     html = text(resp)
     assert "1 photo couldn" in html and "skipped" in html
     assert len(saved_photos(tmp_path)) == 1          # the good one still saved
+
+
+def test_skipped_notice_names_what_is_supported(tmp_path, heif_mode, monkeypatch):
+    c = app_for(tmp_path, heif_mode, monkeypatch).app.test_client()
+    html = text(c.post("/new", data={"name": "Tacos", "photos": (io.BytesIO(b"nope"), "x.bin")},
+                       follow_redirects=True))
+    assert ("JPEG, PNG, WebP and HEIC" in html) is heif_mode
+    assert ("JPEG, PNG and WebP" in html) is (not heif_mode)
+
+
+def heic_bytes(size):
+    """A real HEIC file, written without registering the opener (the app must do that itself)."""
+    pillow_heif = pytest.importorskip("pillow_heif")
+    buf = io.BytesIO()
+    pillow_heif.from_pillow(Image.new("RGB", size, "green")).save(buf)
+    buf.seek(0)
+    return buf
+
+
+def test_real_heic_is_accepted_when_pillow_heif_is_installed(tmp_path, monkeypatch):
+    buf = heic_bytes((640, 480))
+    monkeypatch.delitem(Image.OPEN, "HEIF", raising=False)   # so importing the app has to register it
+    a = load_app(tmp_path)
+    assert "HEIF" in Image.OPEN
+    resp = a.app.test_client().post("/new", data={"name": "Phone", "photos": (buf, "IMG_0002.HEIC")},
+                                    follow_redirects=True)
+    assert "skipped" not in text(resp)
+    (img,) = saved_photos(tmp_path)
+    assert img.format == "JPEG" and img.size == (640, 480)
+
+
+def test_real_heic_is_refused_without_the_plugin(tmp_path, monkeypatch):
+    buf = heic_bytes((64, 48))
+    a = app_for(tmp_path, False, monkeypatch)
+    resp = a.app.test_client().post("/new", data={"name": "Phone", "photos": (buf, "IMG_0002.HEIC")},
+                                    follow_redirects=True)
+    assert "1 photo couldn" in text(resp)
+    assert saved_photos(tmp_path) == []
 
 
 def test_no_notice_when_all_photos_saved(tmp_path):

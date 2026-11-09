@@ -48,6 +48,11 @@ MAX_DECODE_PIXELS = 40_000_000  # after JPEG draft scaling; ~120 MB as RGB
 # The only formats uploads may be in. Pillow's other decoders (PSD, FITS, BMP, TIFF, ...) have had
 # memory-safety bugs and nothing here needs them. HEIF is only offered when a HEIF plugin is registered.
 IMAGE_FORMATS = ("JPEG", "PNG", "WEBP", "HEIF")
+try:  # iPhone HEIC photos, when the optional pillow-heif package is installed
+    from pillow_heif import register_heif_opener
+    register_heif_opener()
+except ImportError:
+    pass
 
 def local_today(now=None):
     """Today's date in the household's time zone, not the server's (usually UTC)."""
@@ -155,6 +160,13 @@ def image_formats():
     """IMAGE_FORMATS that this Pillow build can actually decode (WebP and HEIF are optional)."""
     Image.init()
     return [f for f in IMAGE_FORMATS if f in Image.OPEN]
+
+
+def supported_formats_label():
+    """"JPEG, PNG and WebP" (plus HEIC when pillow-heif is installed), for the skipped-photos notice."""
+    names = {"JPEG": "JPEG", "PNG": "PNG", "WEBP": "WebP", "HEIF": "HEIC"}
+    got = [names[f] for f in image_formats()]
+    return ", ".join(got[:-1]) + " and " + got[-1]
 
 
 def open_image(stream):
@@ -776,7 +788,8 @@ def meal_detail(meal_id):
     meal, photos = get_meal(meal_id)
     skipped = request.args.get("skipped", "")
     return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES,
-                           skipped=int(skipped) if skipped.isdigit() else 0)
+                           skipped=int(skipped) if skipped.isdigit() else 0,
+                           supported_formats=supported_formats_label())
 
 
 @app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])
