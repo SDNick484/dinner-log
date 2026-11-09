@@ -10,13 +10,14 @@ README.md is the user-facing guide; this file is how to work on the code. Its si
 ## Map
 | File | What's in it |
 |---|---|
-| `app.py` | Everything, top to bottom: config (`DATA_DIR`, `APP_TZ` via `_load_tz`, `local_today`), `SCHEMA` and the inline upgrade of old databases (runs at import), Access gate (`CF_*`, `LAN_*`, `AccessKeys` key cache, `access_claims`, `lan_access`, `@bearer_route` / `@public_route`, `require_access`), `refuse_cross_site_writes` (CSRF guard), `db()`, photos (`save_photos`, `remove_photo_files`), cookbook id/uid parsing and `parse_meal_params`, Cookbook Collection client (`COOKBOOK_*`, `cookbook_book`, `title_key`, caches, `/cookbook/recipes`), link helpers (`cookbook_search_url`, `cookbook_uid_url`, `catalog_url`), template filters, "Pick for tonight" (`local_dishes`, `fetch_cookbook_picks`, `catalog_dish`, `pick_for_tonight`), the feed (`index`, keyset paging on `(day, id)`), meal CRUD (`/new`, `/meal/<id>`, `/edit`, `/delete`), `/photos/<file>`, `/api/history`, `/healthz`, `/sw.js` |
+| `app.py` | Everything, top to bottom: config (`DATA_DIR`, `APP_TZ` via `_load_tz`, `local_today`), `SCHEMA` and the inline upgrade of old databases (runs at import), Access gate (`CF_*`, `LAN_*`, `AccessKeys` key cache, `access_claims`, `lan_access`, `@bearer_route` / `@public_route`, `require_access`), `refuse_cross_site_writes` (CSRF guard), `db()`, photos (`IMAGE_FORMATS`, `open_image`, `load_photo`, `write_thumb`, `thumb_file`, `save_photos`, `remove_photo_files`), cookbook id/uid parsing and `parse_meal_params`, Cookbook Collection client (`COOKBOOK_*`, `cookbook_book`, `title_key`, caches, `/cookbook/recipes`), link helpers (`cookbook_search_url`, `cookbook_uid_url`, `catalog_url`), template filters, "Pick for tonight" (`local_dishes`, `fetch_cookbook_picks`, `catalog_dish`, `pick_for_tonight`), the feed (`index`, keyset paging on `(day, id)`), meal CRUD (`/new`, `/meal/<id>`, `/edit`, `/delete`), `/photos/<file>`, `/api/history`, `/healthz`, `/sw.js` |
 | `backup.py` | `python3 backup.py [--skip-if PATH]`: SQLite snapshot + integrity check + retention, copy to `BACKUP_TARGET`. Stdlib only, doesn't import `app`. Shipped; `deploy/dinner-log-backup` is its nightly cron wrapper |
 | `backfill_uids.py` | One-off `python3 -m backfill_uids [--dry-run]`: stamps catalog uids on meals logged with only the integer ids. Shipped in the installer |
+| `backfill_thumbs.py` | One-off `python3 -m backfill_thumbs [--dry-run]`: writes the missing 480 px `<name>-t.jpg` thumbnails for photos from before they existed. Idempotent; exit 1 if any photo is missing or unreadable. Shipped in the installer |
 | `templates/` | `denied.html` (the Access 403 page, standalone), `base.html`, `index.html` (feed, filters, pick card, catch-up pills), `detail.html`, `form.html` (create/edit, recipe picker), `_pick_notes.html` |
 | `static/` | `style.css`, `sw.js` (network-first service worker, cache name `dinner-log-v2`), manifest and icons |
-| `deploy/` | `build.sh` -> `dist/setup-dinner-log.sh` (one-file Alpine/OpenRC installer), `install-alpine.sh`, `history-token.sh`, `dinner-log-backup` (cron job), `docker-entrypoint.sh` |
-| `tests/` | pytest. `test_app.py` has `load_app(data_dir)`; the rest build on it: `test_history*.py` (history feed and token), `test_uids.py`, `test_backfill.py`, `test_recipe_picker.py`, `test_suggest.py` (picker), `test_links.py` (catalog links, same-day grouping), `test_photos.py`, `test_security.py`, `test_access.py` (Access gate, key cache, LAN rules; skipped without PyJWT), `test_backup.py`, `test_paging.py`, `test_config.py`, `test_build.py` (the installer payload) |
+| `deploy/` | `build.sh` -> `dist/setup-dinner-log.sh` (one-file Alpine/OpenRC installer), `install-alpine.sh`, `history-token.sh`, `dinner-log-backup` (cron job), `docker-entrypoint.sh`, `requirements-heic.txt` (the optional `pillow-heif` pin; Docker `HEIC` build arg, installer `DINNER_HEIC=1`) |
+| `tests/` | pytest. `test_app.py` has `load_app(data_dir)`; the rest build on it: `test_history*.py` (history feed and token), `test_uids.py`, `test_backfill.py`, `test_recipe_picker.py`, `test_suggest.py` (picker), `test_links.py` (catalog links, same-day grouping), `test_photos.py` (decoder allow-list, HEIC with and without the plugin), `test_thumbs.py`, `test_backfill_thumbs.py`, `test_photo_cache.py`, `test_security.py`, `test_access.py` (Access gate, key cache, LAN rules; skipped without PyJWT), `test_backup.py`, `test_paging.py`, `test_config.py`, `test_build.py` (the installer payload) |
 
 ## Commands
 ```sh
@@ -46,8 +47,12 @@ Deps: `pip install -r requirements.txt pytest`. The Alpine installer's package l
   `@public_route` is for `/healthz` only. Never exempt by path; `test_access.py::test_exemptions_are_explicit` pins the
   list. The LAN rule trusts only the socket peer: don't add ProxyFix or trust X-Forwarded-For. Say what a new route
   exposes in its PR.
-- Photos: `save_photos` downscales to `MAX_PHOTO_EDGE`, re-encodes JPEG and drops EXIF (incl. GPS); header pixel check
-  before decoding. Originals never touch the repo or the data dir. Keep `data/` out of git.
+- Photos: `load_photo` opens uploads only as `IMAGE_FORMATS` (JPEG, PNG, WebP, and HEIF when `pillow_heif` is installed;
+  never widen it, Pillow's other decoders are an attack surface), checks the header pixel count before decoding and
+  draft-decodes any `JpegImageFile` (that includes MPO). `save_photos` downscales to `MAX_PHOTO_EDGE`, re-encodes JPEG,
+  drops EXIF (incl. GPS) and writes a `THUMB_EDGE` thumbnail beside it (`thumb_name`: `x.jpg` -> `x-t.jpg`, derived, no
+  column). Templates use `thumb_file()` for the feed and the form, which falls back to the full image until a thumbnail
+  exists. `/photos/<file>` is `private, ..., immutable`: never `public`. Originals never touch the repo or the data dir. Keep `data/` out of git.
 - A new runtime file (module, script) goes in three places: the `cp` line in `deploy/build.sh`, the `cp` line in
   `deploy/install-alpine.sh`, and a `COPY` in the `Dockerfile`; `test_build.py::test_payload_is_the_app_only` pins the
   installer's contents. `CLAUDE.md`, `README.md`, `tests/` are dev-only and are not shipped.
