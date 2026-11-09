@@ -869,7 +869,7 @@ def delete_meal(meal_id):
 @app.route("/photos/<path:filename>")
 def photo(filename):
     resp = send_from_directory(PHOTO_DIR, filename)
-    resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    resp.headers["Cache-Control"] = "private, max-age=31536000, immutable"
     return resp
 
 
