@@ -17,7 +17,7 @@ README.md is the user-facing guide; this file is how to work on the code. Its si
 | `templates/` | `denied.html` (the Access 403 page, standalone), `base.html`, `index.html` (feed, filters, pick card, catch-up pills), `detail.html`, `form.html` (create/edit, recipe picker), `_pick_notes.html` |
 | `static/` | `style.css`, `sw.js` (network-first service worker, cache name `dinner-log-v2`), manifest and icons |
 | `deploy/` | `build.sh` -> `dist/setup-dinner-log.sh` (one-file Alpine/OpenRC installer), `install-alpine.sh`, `history-token.sh`, `dinner-log-backup` (cron job), `docker-entrypoint.sh`, `requirements-heic.txt` (the optional `pillow-heif` pin; Docker `HEIC` build arg, installer `DINNER_HEIC=1`) |
-| `tests/` | pytest. `test_app.py` has `load_app(data_dir)`; the rest build on it: `test_history*.py` (history feed and token), `test_uids.py`, `test_backfill.py`, `test_recipe_picker.py`, `test_suggest.py` (picker), `test_links.py` (catalog links, same-day grouping), `test_photos.py` (decoder allow-list, HEIC with and without the plugin), `test_thumbs.py`, `test_backfill_thumbs.py`, `test_photo_cache.py`, `test_security.py`, `test_access.py` (Access gate, key cache, LAN rules; skipped without PyJWT), `test_backup.py`, `test_paging.py`, `test_config.py`, `test_build.py` (the installer payload) |
+| `tests/` | pytest. `test_app.py` has `load_app(data_dir)`; the rest build on it: `test_history*.py` (history feed and token), `test_uids.py`, `test_backfill.py`, `test_recipe_picker.py`, `test_suggest.py` (picker), `test_links.py` (catalog links, same-day grouping), `test_photos.py` (decoder allow-list, HEIC with and without the plugin), `test_thumbs.py`, `test_backfill_thumbs.py`, `test_photo_cache.py`, `test_security.py`, `test_access.py` (Access gate, key cache, LAN rules; skipped without PyJWT), `test_backup.py`, `test_paging.py`, `test_config.py`, `test_build.py` (the installer payload), `test_hygiene.py` (public-repo hygiene, same rules as Cookbook Collection's) |
 
 ## Commands
 ```sh
@@ -66,7 +66,8 @@ Deps: `pip install -r requirements.txt pytest`. The Alpine installer's package l
 - Keep READMEs accurate: update the README when setup steps, env vars or behaviour change.
 - Public repo (MIT): no real hostnames, IPs, container/VM IDs, tunnel IDs, tokens, family names or personal paths in
   code, docs, examples or commit messages. Use `cookbooks.example.com` / `dinner.example.com` and loopback addresses.
-  There is no hygiene test here (unlike Cookbook Collection), so grep your own diff for them.
+  `tests/test_hygiene.py` fails on container/VM IDs and home-directory paths in tracked files; hostnames, names and
+  emails can't be listed there without publishing them, so check your diff for those yourself.
 - Conventional commits (`feat:`, `fix:`, `docs:`), small and reviewable.
 
 ## Release flow
