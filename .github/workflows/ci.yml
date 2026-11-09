@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so Alpine package updates (and the next alpine:latest) get tested between pushes.
+    - cron: "23 13 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # A skipped test fails the run (tests/strict_skips.py); a quiet skip hides a broken feature.
+  CI_STRICT: "1"
+  # The tests that need pillow_heif. Jobs without it list these in CI_ALLOW_SKIP.
+  HEIC_SKIPS: "tests/test_photos.py::*with_heif*,tests/test_photos.py::test_real_heic_*"
+
+# Every job runs on pushes to any branch. Pull requests from this repository's own branches are already
+# covered by that push run, so the pull_request run is kept for forks only.
+jobs:
+  lint:
+    name: lint (sh -n, shellcheck)
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install shellcheck (pinned, so local runs agree)
+        run: python -m pip install shellcheck-py==0.11.0.1
+      - name: sh -n
+        run: |
+          for f in deploy/*.sh deploy/dinner-log-backup .github/scripts/*.sh; do
+            sh -n "$f"
+            echo "ok $f"
+          done
+      - name: shellcheck --shell=sh
+        run: shellcheck --shell=sh deploy/*.sh deploy/dinner-log-backup .github/scripts/*.sh
+
+  pytest:
+    name: pytest (Python ${{ matrix.python }}, ${{ matrix.heic && 'HEIC' || 'no HEIC' }})
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13", "3.14"]
+        heic: [true, false]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            deploy/requirements-heic.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt pytest
+          if [ "${{ matrix.heic }}" = true ]; then python -m pip install -r deploy/requirements-heic.txt; fi
+          python -m pip list
+      - name: Strict test suite
+        env:
+          CI_ALLOW_SKIP: ${{ !matrix.heic && env.HEIC_SKIPS || '' }}
+        run: python -m pytest -q
+
+  docker:
+    name: docker image
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build (default HEIC=1)
+        run: docker build -t dinner-log:ci .
+      - name: Run and check
+        run: sh .github/scripts/check-docker.sh dinner-log:ci
