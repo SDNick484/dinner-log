@@ -1379,6 +1379,27 @@ def history():
     return body, 200, {**headers, "Content-Type": "application/json"}
 
 
+SHARED_FILE_RE = re.compile(r"[0-9a-f]{32}\.jpg")  # save_photos' names; never a -t.jpg thumbnail
+
+
+@app.route("/api/photos/<filename>")
+@bearer_route
+def shared_photo(filename):
+    """A photo shared with Cookbook Collection, for the history token only. Anything not shared right now
+    (private, unshared, its dinner no longer eligible, a thumbnail, an unknown name) is the same 404, so the
+    token can't read private photos or tell them from missing ones. Never redirects."""
+    refused = history_token_refusal()
+    if refused:
+        return refused
+    if not SHARED_FILE_RE.fullmatch(filename) or db().execute(
+            f"SELECT 1 FROM photos p JOIN meals m ON m.id = p.meal_id WHERE p.filename = ? AND {SHARED_PHOTO_SQL}",
+            (filename,)).fetchone() is None:
+        abort(404)
+    resp = send_from_directory(PHOTO_DIR, filename, mimetype="image/jpeg")  # 404 if the file is gone
+    resp.headers["Cache-Control"] = "private, no-store"
+    return resp
+
+
 @app.route("/healthz")
 @public_route
 def healthz():

@@ -1,5 +1,6 @@
 """Sharing a dinner photo with Cookbook Collection: the `shared` flag, the edit-form toggle, the `photos` field
 in /api/history and the token-only GET /api/photos/<file> that serves shared files and nothing else."""
+import os
 import sqlite3
 
 import pytest
@@ -205,3 +206,80 @@ def test_history_etag_changes_when_sharing_changes(share):
     assert shared.status_code == 200 and shared.headers["ETag"] != etag
     edit(c, mid)
     assert history(c, shared.headers["ETag"]).status_code == 200
+
+
+# ------------------------------------------------------------------ /api/photos/<file>
+
+def test_photo_route_serves_shared_files_only(share, tmp_path):
+    a, c = share
+    mid = add_meal(c, 2)
+    (p1, f1, _), (_, f2, _) = photo_rows(a, mid)
+    edit(c, mid, [p1])
+    r = fetch(c, f1)
+    assert r.status_code == 200 and r.mimetype == "image/jpeg"
+    assert r.get_data() == (tmp_path / "photos" / f1).read_bytes()
+    assert r.headers["Cache-Control"] == "private, no-store"
+    assert fetch(c, f2).status_code == 404               # private: same answer as a missing file
+    edit(c, mid)
+    assert fetch(c, f1).status_code == 404               # unshared
+
+
+def test_photo_route_needs_the_token(share):
+    a, c = share
+    mid = add_meal(c)
+    pid, f, _ = photo_rows(a, mid)[0]
+    edit(c, mid, [pid])
+    for token in (None, "nope", TOKEN + "x"):
+        r = fetch(c, f, token)
+        assert r.status_code == 401 and TOKEN not in r.get_data(as_text=True)
+    assert c.get(f"/api/photos/{f}", headers={"Authorization": TOKEN}).status_code == 401
+
+
+def test_photo_route_off_without_history_token(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    mid = add_meal(c)
+    pid, f, _ = photo_rows(a, mid)[0]
+    edit(c, mid, [pid])
+    assert c.get(f"/api/photos/{f}", headers={"Authorization": "Bearer "}).status_code == 404
+
+
+def test_photo_route_refuses_thumbnails_and_odd_names(share, tmp_path):
+    a, c = share
+    mid = add_meal(c)
+    pid, f, _ = photo_rows(a, mid)[0]
+    edit(c, mid, [pid])
+    thumb = f[:-4] + "-t.jpg"
+    assert (tmp_path / "photos" / thumb).exists()
+    for name in (thumb, f.upper(), f[:-4] + ".png", f + "x", "../meals.db", "..%2Fmeals.db", "meals.db", "x" * 32 + ".jpg"):
+        r = fetch(c, name)
+        assert r.status_code == 404, name
+        assert not (300 <= r.status_code < 400)
+
+
+def test_photo_route_hides_shared_photos_of_ineligible_meals(share):
+    a, c = share
+    mid = add_meal(c)
+    pid, f, _ = photo_rows(a, mid)[0]
+    edit(c, mid, [pid])
+    con = sqlite3.connect(a.DB_PATH)
+    con.execute("UPDATE meals SET source_type='restaurant'")   # outside the form, so the flag survives
+    con.commit()
+    con.close()
+    assert fetch(c, f).status_code == 404
+
+
+def test_photo_route_with_flag_but_missing_file(share, tmp_path):
+    a, c = share
+    mid = add_meal(c)
+    pid, f, _ = photo_rows(a, mid)[0]
+    edit(c, mid, [pid])
+    os.remove(tmp_path / "photos" / f)
+    assert fetch(c, f).status_code == 404
+
+
+def test_photo_route_never_redirects(share):
+    a, c = share
+    for path in ("/api/photos/", "/api/photos", "/api/photos/abc/"):
+        r = c.get(path, headers={"Authorization": f"Bearer {TOKEN}"})
+        assert not (300 <= r.status_code < 400), path
