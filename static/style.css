@@ -171,3 +171,4 @@ legend { font-size: .85rem; color: var(--muted); font-weight: 600; padding: 0 6p
 .lt-when { font-size: .85rem; font-weight: 600; }
 .lt-line .score { margin-left: 0; font-size: .85rem; }
 .lt-notes { flex-basis: 100%; font-size: .85rem; color: var(--muted); overflow-wrap: anywhere; }
+.last-time[hidden] { display: none; }

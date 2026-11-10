@@ -13,7 +13,11 @@ self.addEventListener('activate', e => e.waitUntil(
 
 self.addEventListener('fetch', e => {
   const req = e.request;
-  if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+  const url = new URL(req.url);
+  if (req.method !== 'GET' || url.origin !== self.location.origin) return;
+  // Straight to the network: it carries notes and a new URL per typed name, and the cache below
+  // would keep every one of them (it doesn't honour no-store).
+  if (url.pathname === '/last-time') return;
   e.respondWith(
     fetch(req)
       .then(res => {

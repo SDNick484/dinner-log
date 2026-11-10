@@ -264,7 +264,7 @@ def test_unknown_paths_get_403_not_404(app_on):
 
 # ------------------------------------------------------------------ everything else needs the token
 @pytest.mark.parametrize("path", ["/", "/new", "/sw.js", "/static/manifest.json", "/static/icon-192.png",
-                                  "/cookbook/recipes?title=x", "/photos/x.jpg", "/meal/1"])
+                                  "/cookbook/recipes?title=x", "/photos/x.jpg", "/meal/1", "/last-time?name=Gumbo"])
 def test_pages_static_and_pwa_files_need_the_token(app_on, path):
     _, c, _, _ = app_on
     assert get(c, path).status_code == 403

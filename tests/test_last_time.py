@@ -246,3 +246,82 @@ def test_pick_card_without_history_has_no_panel(tmp_path):
     c = a.app.test_client()
     page = c.get("/?suggest=1").get_data(as_text=True)
     assert "Last time" not in page
+
+
+# ------------------------------------------------------------------ the JSON route behind the form
+def test_route_shape(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    with a.app.app_context():
+        i = add(a, "2026-10-01", "Gumbo", 8, "Good")
+        j = add(a, "2026-10-09", "Gumbo", 6, "Meh")
+    r = c.get("/last-time?name=gumbos")
+    assert r.status_code == 200 and r.mimetype == "application/json"
+    assert r.headers["Cache-Control"] == "private, no-store"
+    assert r.get_json() == {
+        "count": 2, "best": 8, "summary": "made 2 times · best 8/10",
+        "recent": [
+            {"id": j, "day": "2026-10-09", "when": "Fri Oct 9, 2026", "rating": 6, "notes": "Meh", "url": f"/meal/{j}"},
+            {"id": i, "day": "2026-10-01", "when": "Thu Oct 1, 2026", "rating": 8, "notes": "Good", "url": f"/meal/{i}"}]}
+
+
+def test_route_matches_by_uid_and_excludes_the_dinner_being_edited(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    with a.app.app_context():
+        i = add(a, "2026-10-01", "Weeknight carbonara", 8, uid=U1, source_type="cookbook")
+        j = add(a, "2026-10-09", "Carbonara", 9, uid=U1, source_type="cookbook")
+        add(a, "2026-10-10", "Carbonara", 3, uid=U2, source_type="cookbook")      # a different recipe
+    data = c.get(f"/last-time?uid={U1}&name=Carbonara&exclude={j}").get_json()
+    assert [t["id"] for t in data["recent"]] == [i]
+    assert data["summary"] == "made 1 other time · best 8/10"                   # editing: it's one of them
+    assert c.get(f"/last-time?uid={U1}&name=Carbonara").get_json()["summary"] == "made 2 times · best 9/10"
+
+
+def test_route_empty_case(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    with a.app.app_context():
+        add(a, "2026-10-01", "Gumbo")
+    empty = {"count": 0, "best": None, "summary": "", "recent": []}
+    assert c.get("/last-time?name=Lasagna").get_json() == empty
+    assert c.get("/last-time").get_json() == empty
+
+
+def test_route_survives_junk_input(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    with a.app.app_context():
+        add(a, "2026-10-01", "Gumbo", 8)
+    for qs in ("uid=zzz&name=Gumbo&exclude=abc", "exclude=-1&name=Gumbo", "name=" + "x" * 50_000,
+               "uid=%00&name=%00", "exclude=" + "9" * 40 + "&name=Gumbo"):
+        assert c.get("/last-time?" + qs).status_code == 200, qs
+    assert c.get("/last-time?uid=zzz&name=Gumbo&exclude=abc").get_json()["count"] == 1   # junk is ignored
+
+
+def test_route_never_sends_more_than_the_clipped_notes(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    with a.app.app_context():
+        add(a, "2026-10-01", "Gumbo", 8, "secret " * 100)
+    note = c.get("/last-time?name=Gumbo").get_json()["recent"][0]["notes"]
+    assert len(note) <= 140 and note.endswith("…")
+
+
+def test_form_has_the_panel_and_the_route(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    for url in ("/new", "/new?name=Gumbo"):
+        page = c.get(url).get_data(as_text=True)
+        assert 'id="last-time"' in page and "/last-time" in page and "hidden" in page.split('id="last-time"')[1][:80]
+    with a.app.app_context():
+        i = add(a, "2026-10-01", "Gumbo")
+    assert f"const editId = '{i}'" in c.get(f"/meal/{i}/edit").get_data(as_text=True)
+    assert "const editId = ''" in c.get("/new").get_data(as_text=True)
+
+
+def test_service_worker_never_caches_the_route(tmp_path):
+    """sw.js ignores Cache-Control, so without this each typed name would leave notes in Cache Storage."""
+    a = load_app(tmp_path)
+    sw = a.app.test_client().get("/sw.js").get_data(as_text=True)
+    assert "'/last-time'" in sw

@@ -21,7 +21,7 @@ import urllib.request
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import (Flask, abort, g, redirect, render_template, request,
+from flask import (Flask, abort, g, jsonify, redirect, render_template, request,
                    send_from_directory, url_for)
 from PIL import Image, ImageOps, JpegImagePlugin, UnidentifiedImageError
 
@@ -1183,6 +1183,24 @@ def delete_meal(meal_id):
     db().commit()
     remove_photo_files(names)
     return redirect(url_for("index"))
+
+
+LAST_TIME_NAME_CHARS = 200
+
+
+@app.route("/last-time")
+def last_time_route():
+    """JSON for the form's "Last time" panel: ?uid=<recipe uid>&name=<dinner name>&exclude=<meal id>.
+
+    It carries notes, so it sits behind the normal gate like every page (not a @bearer_route) and the
+    browser may not keep it. Notes are clipped to one line here; read-only, no side effects. `exclude`
+    is the dinner being edited, which also switches the summary to "N other times"."""
+    exclude = parse_cookbook_id(request.args.get("exclude"))
+    panel = last_time_panel(request.args.get("uid"), request.args.get("name", "")[:LAST_TIME_NAME_CHARS],
+                            exclude_id=exclude, other=exclude is not None)
+    resp = jsonify(panel)
+    resp.headers["Cache-Control"] = "private, no-store"
+    return resp
 
 
 @app.route("/photos/<path:filename>")
