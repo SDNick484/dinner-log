@@ -243,6 +243,16 @@ Typing over the name, cookbook or page afterwards clears all four. Older dinners
 
 Upgrading: deploy Dinner Log first (the Alpine installer fills in `HISTORY_TOKEN` if it's empty), then upgrade Cookbook Collection and give it the URL and token. Either order works: each side ignores fields the other doesn't send yet. New columns are added on start and existing dinners aren't changed.
 
+### Showing dinner photos on the cookbook page
+
+A photo of a dinner made from a cookbook or a recipe website can also appear on that recipe's page in Cookbook Collection, without uploading it twice. It's opt-in per photo and off by default: open the dinner's **Edit** page and tick **Show on the cookbook page** under the photo. The box is offered only for cookbook and website dinners, the ones the catalog can match to a recipe.
+
+**The catalog is public.** A photo shown there can be seen by anyone who browses the catalog (its public Photos gallery included), except for recipes saved from websites, which Cookbook Collection keeps visible to its editors only. The dinner's page marks shared photos *On the cookbook page (public)*.
+
+- **Taking it down.** Untick the box, delete the photo, or delete the dinner. Changing a dinner's source to a restaurant or *Our own* unshares all its photos, and switching back doesn't re-share them. Cookbook Collection removes its copy the next time it pulls the history (within about a minute of its next page view). See its README for how long browsers and a CDN may keep a copy they already fetched.
+- **What leaves this app.** `/api/history` lists each dinner's shared photos by file name (`"photos": [...]`, empty when none; still version 1). Cookbook Collection fetches each one from `GET /api/photos/<file>` with the same `HISTORY_TOKEN`. That route serves a photo only while it is shared on an eligible dinner; a private photo, a thumbnail or an unknown name all get the same 404, so the token can't read photos you haven't shared. The file is the stored 1600 px JPEG, which already carries no EXIF or location data; the catalog re-encodes it again.
+- **Nothing to set up** beyond the history link above: no new setting. Existing photos stay private after the upgrade.
+
 ### Backfilling uids on older dinners
 
 Dinners logged before uids existed have only the integer ids. `backfill_uids` resolves them once through the catalog's public `GET /api/books/<id>` and stamps the uids, but only where the catalog still agrees with the dinner: the book's title must match the dinner's cookbook, and the recipe's page or name must match the dinner's. A mismatch (the id now belongs to another book or recipe) is reported and left alone. Run it after upgrading Cookbook Collection, dry run first:
@@ -294,7 +304,7 @@ export CF_AUD=<Application Audience (AUD) tag>         # on the Access applicati
 Then restart. Every request, including the service worker, manifest and icons, must carry a valid `Cf-Access-Jwt-Assertion` (Access adds it to every request it lets through): signed by your team's current key, for this application's AUD, not expired. Anything else gets a short 403 page; the reason is in the log (`/var/log/dinner-log.log`), e.g. `Access refused: GET / from 192.168.1.20: no Access token (LAN_ACCESS is off)`.
 
 - **Unset, nothing changes.** With only one of the two set, the app refuses to start rather than run unprotected; likewise if PyJWT is missing (the Alpine installer adds `py3-jwt py3-cryptography`; Docker gets it from `requirements.txt`).
-- **Exceptions.** `/api/history` is called by Cookbook Collection with its bearer token instead, and checks that token itself. `/healthz` answers `ok` to anyone, for health checks; it says nothing else.
+- **Exceptions.** `/api/history` and `/api/photos/<file>` are called by Cookbook Collection with its bearer token instead, and check that token themselves. `/healthz` answers `ok` to anyone, for health checks; it says nothing else.
 - **Signing keys** come from `https://<team domain>/cdn-cgi/access/certs` and are cached. A token naming an unknown key triggers at most one fetch a minute, so junk tokens can't make the app hammer Cloudflare; if a fetch fails, the keys it already has keep working.
 - **Clock.** Up to a minute of clock difference with Cloudflare is tolerated. More than that and fresh sign-ins are refused as "issued in the future"; keep the server's time synced.
 

@@ -90,13 +90,20 @@
 
   {% if photos %}
   <div class="existing">
-    <div class="legend">Photos <small>(check to remove)</small></div>
+    <div class="legend">Photos</div>
+    {# Sharing is offered only while the dinner can resolve to a catalog recipe; syncSource() shows and hides it
+       with the source, and the server unshares everything when the saved source isn't eligible. #}
+    <p class="share-note" data-show="cookbook online"{{ ' hidden' if not share_ok }}>
+      <strong>Show on the cookbook page</strong> puts a photo on this recipe’s page in the cookbook catalog.
+      That site is public: anyone can see the photos shown there. Untick it to take the photo down again.</p>
     <div class="thumbs">
       {% for p in photos %}
-        <label class="thumb">
+        <div class="thumb">
           <img src="{{ url_for('photo', filename=thumb_file(p.filename)) }}" alt="">
-          <input type="checkbox" name="delete_photo" value="{{ p.id }}"><span>Remove</span>
-        </label>
+          <label><input type="checkbox" name="delete_photo" value="{{ p.id }}"><span>Remove</span></label>
+          <label class="share" data-show="cookbook online"{{ ' hidden' if not share_ok }}>
+            <input type="checkbox" name="share_photo" value="{{ p.id }}"{{ ' checked' if p.shared and share_ok }}><span>Show on the cookbook page</span></label>
+        </div>
       {% endfor %}
     </div>
   </div>

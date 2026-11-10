@@ -147,7 +147,7 @@ def test_history_scope_and_shape(hist):
     assert chicken == {"id": 1, "day": "2026-10-01", "name": "Roast chicken", "source_type": "cookbook",
                        "source_title": "Zuni", "source_detail": "342", "rating": 8,
                        "cookbook_book_id": 7, "cookbook_recipe_id": 1,
-                       "cookbook_book_uid": None, "cookbook_recipe_uid": None}
+                       "cookbook_book_uid": None, "cookbook_recipe_uid": None, "photos": []}
 
 
 def test_history_etag(hist):

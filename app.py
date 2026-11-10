@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS meals (
 CREATE TABLE IF NOT EXISTS photos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     meal_id INTEGER NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
-    filename TEXT NOT NULL
+    filename TEXT NOT NULL,
+    shared INTEGER NOT NULL DEFAULT 0        -- 1: offered to Cookbook Collection for the recipe's page (public there)
 );
 CREATE INDEX IF NOT EXISTS idx_meals_day ON meals(day DESC);
 CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id);
@@ -357,6 +358,9 @@ with sqlite3.connect(DB_PATH) as _c:
     for _col in ("cookbook_book_uid", "cookbook_recipe_uid"):
         if _col not in _cols:
             _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} TEXT")
+    # ...and before a photo could be shared with it. Existing photos stay private (0); nothing to backfill.
+    if "shared" not in [r[1] for r in _c.execute("PRAGMA table_info(photos)")]:
+        _c.execute("ALTER TABLE photos ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
 
 
 def image_formats():
@@ -479,6 +483,18 @@ def parse_cookbook_uid(raw):
     """A Cookbook Collection uid (32 lowercase hex characters), else None."""
     raw = str(raw if raw is not None else "").strip().lower()
     return raw if UID_RE.fullmatch(raw) else None
+
+
+# A photo may be shown on its recipe's page in Cookbook Collection only while its dinner can resolve to a recipe
+# there: a cookbook or website source, or a stamped catalog uid. /api/history and /api/photos/<file> filter
+# with SHARED_PHOTO_SQL (aliases p = photos, m = meals) and the edit form with share_eligible(); keep them alike.
+SHARED_PHOTO_SQL = (f"p.shared = 1 AND (m.source_type IN ({', '.join(repr(s) for s in CATALOG_SOURCES)}) "
+                    "OR m.cookbook_book_uid IS NOT NULL OR m.cookbook_recipe_uid IS NOT NULL)")
+
+
+def share_eligible(source_type, book_uid, recipe_uid):
+    """Whether a dinner's photos may be offered to Cookbook Collection (see SHARED_PHOTO_SQL)."""
+    return source_type in CATALOG_SOURCES or bool(parse_cookbook_uid(book_uid) or parse_cookbook_uid(recipe_uid))
 
 
 def parse_meal_params(params, default_source="cookbook"):
@@ -1217,11 +1233,28 @@ def get_meal(meal_id):
 def meal_detail(meal_id):
     meal, photos = get_meal(meal_id)
     skipped = request.args.get("skipped", "")
-    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES,
+    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES, share_ok=meal_share_ok(meal),
                            skipped=int(skipped) if skipped.isdigit() else 0,
                            supported_formats=supported_formats_label(),
                            last_time=last_time_panel(meal["cookbook_recipe_uid"], meal["name"],
                                                      exclude_id=meal_id, other=True))
+
+
+def meal_share_ok(meal):
+    return share_eligible(meal["source_type"], meal["cookbook_book_uid"], meal["cookbook_recipe_uid"])
+
+
+def set_shared(meal_id, photos, v):
+    """Apply the form's "Show on the cookbook page" boxes: a checked box shares the photo, an unchecked one
+    unshares it, and a dinner that can no longer resolve to a catalog recipe has all its photos unshared, so
+    switching its source back later never re-shares anything by itself. Only this meal's existing photos
+    count; any other id in the form is ignored."""
+    mine = {p["id"] for p in photos}
+    want = set()
+    if share_eligible(v["source_type"], v["cookbook_book_uid"], v["cookbook_recipe_uid"]):
+        want = {int(x) for x in request.form.getlist("share_photo") if x.isdigit()} & mine
+    db().executemany("UPDATE photos SET shared=? WHERE id=? AND meal_id=?",
+                     [(int(pid in want), pid, meal_id) for pid in mine])
 
 
 @app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])
@@ -1243,6 +1276,7 @@ def edit_meal(meal_id):
                 f"SELECT filename FROM photos WHERE meal_id=? AND id IN ({marks})",
                 [meal_id, *drop])]
             db().execute(f"DELETE FROM photos WHERE meal_id=? AND id IN ({marks})", [meal_id, *drop])
+        set_shared(meal_id, photos, v)  # before the uploads, so a new photo can't be shared by a guessed id
         skipped = save_photos(meal_id, request.files.getlist("photos"))
         db().commit()
         remove_photo_files(names)  # only once the rows are gone for good
@@ -1250,7 +1284,7 @@ def edit_meal(meal_id):
     skipped = request.args.get("skipped", "")
     return render_template("form.html", meal=meal, photos=photos, types=SOURCE_TYPES,
                            books=titles_for("cookbook"), places=titles_for("restaurant"),
-                           editing=True, shared=request.args.get("shared") == "1",
+                           share_ok=meal_share_ok(meal), editing=True, shared=request.args.get("shared") == "1",
                            skipped=int(skipped) if skipped.isdigit() else 0,
                            supported_formats=supported_formats_label())
 
@@ -1300,12 +1334,33 @@ HISTORY_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_de
 
 def history_rows(con):
     """Meals Cookbook Collection can match to its catalog: from a cookbook or website, with a link, or
-    stamped with its ids. Restaurant and home-recipe dinners without a link are never sent."""
-    return [dict(zip(HISTORY_FIELDS, r)) for r in con.execute(
+    stamped with its ids. Restaurant and home-recipe dinners without a link are never sent.
+
+    Each meal carries "photos": the file names of its photos shared with the catalog (SHARED_PHOTO_SQL),
+    by photo id, else []. Cookbook Collection fetches them from /api/photos/<file>."""
+    meals = [dict(zip(HISTORY_FIELDS, r)) for r in con.execute(
         f"SELECT {', '.join(HISTORY_FIELDS)} FROM meals "
         "WHERE source_type IN ('cookbook', 'online') OR source_detail LIKE '%://%' OR source_title LIKE '%://%' "
         "OR cookbook_book_id IS NOT NULL OR cookbook_recipe_id IS NOT NULL "
         "OR cookbook_book_uid IS NOT NULL OR cookbook_recipe_uid IS NOT NULL ORDER BY id")]
+    shared = {}
+    for meal_id, filename in con.execute("SELECT p.meal_id, p.filename FROM photos p JOIN meals m ON m.id = p.meal_id "
+                                         f"WHERE {SHARED_PHOTO_SQL} ORDER BY p.id"):
+        shared.setdefault(meal_id, []).append(filename)
+    for m in meals:
+        m["photos"] = shared.get(m["id"], [])
+    return meals
+
+
+def history_token_refusal():
+    """None when the request carries HISTORY_TOKEN as a bearer token, else the response to send: 404 while
+    no token is configured (the history routes don't exist), 401 for a missing or wrong one."""
+    if not HISTORY_TOKEN:
+        abort(404)
+    auth = request.headers.get("Authorization", "")
+    if auth[:7].lower() != "bearer " or not hmac.compare_digest(auth[7:].strip().encode(), HISTORY_TOKEN.encode()):
+        return {"error": "unauthorized"}, 401
+    return None
 
 
 @app.route("/api/history")
@@ -1313,17 +1368,36 @@ def history_rows(con):
 def history():
     """Read-only cooking history for Cookbook Collection, behind HISTORY_TOKEN. The whole list every time,
     with an ETag so an unchanged history costs a 304."""
-    if not HISTORY_TOKEN:
-        abort(404)
-    auth = request.headers.get("Authorization", "")
-    if auth[:7].lower() != "bearer " or not hmac.compare_digest(auth[7:].strip().encode(), HISTORY_TOKEN.encode()):
-        return {"error": "unauthorized"}, 401
+    refused = history_token_refusal()
+    if refused:
+        return refused
     body = json.dumps({"version": HISTORY_VERSION, "meals": history_rows(db())}, separators=(",", ":")).encode()
     etag = '"' + hashlib.sha256(body).hexdigest() + '"'
     headers = {"ETag": etag, "Cache-Control": "private, no-store"}
     if request.headers.get("If-None-Match") == etag:
         return "", 304, headers
     return body, 200, {**headers, "Content-Type": "application/json"}
+
+
+SHARED_FILE_RE = re.compile(r"[0-9a-f]{32}\.jpg")  # save_photos' names; never a -t.jpg thumbnail
+
+
+@app.route("/api/photos/<filename>")
+@bearer_route
+def shared_photo(filename):
+    """A photo shared with Cookbook Collection, for the history token only. Anything not shared right now
+    (private, unshared, its dinner no longer eligible, a thumbnail, an unknown name) is the same 404, so the
+    token can't read private photos or tell them from missing ones. Never redirects."""
+    refused = history_token_refusal()
+    if refused:
+        return refused
+    if not SHARED_FILE_RE.fullmatch(filename) or db().execute(
+            f"SELECT 1 FROM photos p JOIN meals m ON m.id = p.meal_id WHERE p.filename = ? AND {SHARED_PHOTO_SQL}",
+            (filename,)).fetchone() is None:
+        abort(404)
+    resp = send_from_directory(PHOTO_DIR, filename, mimetype="image/jpeg")  # 404 if the file is gone
+    resp.headers["Cache-Control"] = "private, no-store"
+    return resp
 
 
 @app.route("/healthz")

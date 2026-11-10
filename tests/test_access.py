@@ -320,7 +320,7 @@ def test_exemptions_are_explicit(app_on):
     assert {ep for ep, kind in exempt.items() if kind == "public"} == {"healthz"}
     assert set(exempt.values()) <= {"public", "bearer"}
     bearer = [ep for ep, kind in exempt.items() if kind == "bearer"]
-    assert bearer == ["history"]
+    assert sorted(bearer) == ["history", "shared_photo"]
     a.HISTORY_TOKEN = "h" * 64                         # set, so the route exists and must check it
     for rule in a.app.url_map.iter_rules():
         if rule.endpoint in bearer:

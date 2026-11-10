@@ -79,6 +79,9 @@ legend { font-size: .85rem; color: var(--muted); font-weight: 600; padding: 0 6p
 .thumb { position: relative; width: 84px; font-size: .7rem; text-align: center; }
 .thumb img, .thumb-img { width: 84px; height: 84px; object-fit: cover; border-radius: 10px; display: block; }
 .thumb input { margin-right: 4px; }
+.thumb label { display: block; margin-top: 4px; }
+.share-note { font-size: .8rem; color: var(--muted); margin: 0 0 8px; }
+.shared-mark { font-size: .8rem; color: var(--muted); margin: -4px 0 0; }
 .legend { font-size: .85rem; color: var(--muted); font-weight: 600; margin-bottom: 6px; }
 
 .actions { display: flex; gap: 10px; }
