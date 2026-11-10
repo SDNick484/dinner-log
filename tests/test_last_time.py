@@ -325,3 +325,10 @@ def test_service_worker_never_caches_the_route(tmp_path):
     a = load_app(tmp_path)
     sw = a.app.test_client().get("/sw.js").get_data(as_text=True)
     assert "'/last-time'" in sw
+
+
+def test_a_name_set_in_code_by_the_share_prefill_asks_for_the_panel(tmp_path):
+    """The share prefill sets the name without an input event, so it must ask for the panel itself;
+    otherwise a title-only share (no link, so no source change either) never shows "Last time"."""
+    page = load_app(tmp_path).app.test_client().get("/new").get_data(as_text=True)
+    assert "nameInput.value = p.name; loadLastTimeSoon();" in page

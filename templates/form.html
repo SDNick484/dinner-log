@@ -384,7 +384,7 @@
         titleInput.value = p.source_title;
         detailInput.value = p.source_detail;
       }
-      if (p.name) nameInput.value = p.name;
+      if (p.name) { nameInput.value = p.name; loadLastTimeSoon(); }   // set in code: no input event fires
       if (p.notes) form.querySelector('[name=notes]').value = p.notes;
       if (files.length < meta.files) {
         say(`${meta.files - files.length} of the shared photos couldn’t be loaded. Add them again below.`);
