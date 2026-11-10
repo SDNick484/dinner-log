@@ -1022,22 +1022,100 @@ def index():
 
 
 
+def insert_meal(v):
+    """Insert a meal from parse_meal_params values; returns its id. The caller commits."""
+    cur = db().execute(
+        "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating, "
+        "cookbook_book_id, cookbook_recipe_id, cookbook_book_uid, cookbook_recipe_uid) "
+        "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating, "
+        ":cookbook_book_id, :cookbook_recipe_id, :cookbook_book_uid, :cookbook_recipe_uid)", v)
+    return cur.lastrowid
+
+
+def new_form(meal, notice=None):
+    return render_template("form.html", meal=meal, photos=[], types=SOURCE_TYPES,
+                           books=titles_for("cookbook"), places=titles_for("restaurant"),
+                           editing=False, notice=notice)
+
+
 @app.route("/new", methods=["GET", "POST"])
 def new_meal():
     if request.method == "POST":
         v = form_values()
-        cur = db().execute(
-            "INSERT INTO meals (day, name, source_type, source_title, source_detail, notes, rating, "
-            "cookbook_book_id, cookbook_recipe_id, cookbook_book_uid, cookbook_recipe_uid) "
-            "VALUES (:day, :name, :source_type, :source_title, :source_detail, :notes, :rating, "
-            ":cookbook_book_id, :cookbook_recipe_id, :cookbook_book_uid, :cookbook_recipe_uid)", v)
-        skipped = save_photos(cur.lastrowid, request.files.getlist("photos"))
+        meal_id = insert_meal(v)
+        skipped = save_photos(meal_id, request.files.getlist("photos"))
         db().commit()
-        return redirect(url_for("meal_detail", meal_id=cur.lastrowid, skipped=skipped or None))
-    meal = parse_meal_params(request.args)
-    return render_template("form.html", meal=meal, photos=[], types=SOURCE_TYPES,
-                           books=titles_for("cookbook"), places=titles_for("restaurant"),
-                           editing=False)
+        return redirect(url_for("meal_detail", meal_id=meal_id, skipped=skipped or None))
+    return new_form(parse_meal_params(request.args))
+
+
+SHARE_URL_RE = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+SHARE_MAX_NAME = 200
+SHARE_MAX_TEXT = 2000
+SHARE_MAX_URL = 2000
+
+
+def _share_link(raw):
+    """raw as an http(s) URL with a host, or None. Trailing punctuation from prose is trimmed."""
+    raw = (raw or "").strip().rstrip(".,;:!?)]}")
+    if not raw or len(raw) > SHARE_MAX_URL:
+        return None
+    parts = urllib.parse.urlsplit(raw)
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        return None
+    return raw
+
+
+def share_prefill(title, text, url):
+    """Map an Android share (title, text, url) to meal fields for parse_meal_params.
+
+    Chrome often leaves url empty and puts the page address in text, so the first http(s) URL in text
+    is used when url isn't one. A link makes the dinner "Online": Link is the URL, Site its host without
+    "www.", and the title becomes the dish name. Text left once the URL is removed goes in the notes.
+    Mirrored in templates/form.html (sharePrefill) for the service-worker path; keep the two in step."""
+    title = " ".join(str(title or "").split())[:SHARE_MAX_NAME]
+    text = str(text or "").strip()
+    link = _share_link(url)
+    if link:
+        text = text.replace(link, " ")
+    else:
+        m = SHARE_URL_RE.search(text)
+        link = _share_link(m.group(0)) if m else None
+        if link:
+            text = text[:m.start()] + " " + text[m.end():]
+    rest = " ".join(text.split())
+    if rest == title:      # many apps send the page title in both fields
+        rest = ""
+    out = {"name": title, "notes": rest[:SHARE_MAX_TEXT]}
+    if link:
+        host = urllib.parse.urlsplit(link).hostname.lower()
+        out.update(source_type="online", source_detail=link,
+                   source_title=host[4:] if host.startswith("www.") else host)
+    return out
+
+
+@app.route("/share", methods=["POST"])
+def share():
+    """The manifest's share_target, server side. The service worker normally answers this POST itself
+    (it stashes the files and redirects to /new?shared=<key>), so this only runs before the worker
+    controls the app, e.g. the first share after installing. It must not drop what was shared:
+    photos become a new dinner straight away (validated and resized like any upload) and the browser
+    goes to its edit page; a link or text alone opens the prefilled form without saving anything."""
+    prefill = share_prefill(request.form.get("title"), request.form.get("text"), request.form.get("url"))
+    files = [f for f in request.files.getlist("photos") if f and f.filename]
+    if not files:
+        return new_form(parse_meal_params(prefill, default_source="cookbook"))
+    v = parse_meal_params(prefill, default_source="original")
+    v["name"] = v["name"] or "Untitled dinner"
+    meal_id = insert_meal(v)
+    skipped = save_photos(meal_id, files)
+    if skipped == len(files):  # nothing readable: don't leave an empty dinner behind
+        db().rollback()
+        return new_form(parse_meal_params(prefill, default_source="original"),
+                        notice=f"The shared photo{'s' if len(files) != 1 else ''} couldn't be read. "
+                               f"Only {supported_formats_label()} photos are supported here.")
+    db().commit()
+    return redirect(url_for("edit_meal", meal_id=meal_id, shared=1, skipped=skipped or None), code=303)
 
 
 def get_meal(meal_id):
@@ -1080,9 +1158,12 @@ def edit_meal(meal_id):
         db().commit()
         remove_photo_files(names)  # only once the rows are gone for good
         return redirect(url_for("meal_detail", meal_id=meal_id, skipped=skipped or None))
+    skipped = request.args.get("skipped", "")
     return render_template("form.html", meal=meal, photos=photos, types=SOURCE_TYPES,
                            books=titles_for("cookbook"), places=titles_for("restaurant"),
-                           editing=True)
+                           editing=True, shared=request.args.get("shared") == "1",
+                           skipped=int(skipped) if skipped.isdigit() else 0,
+                           supported_formats=supported_formats_label())
 
 
 @app.route("/meal/<int:meal_id>/delete", methods=["POST"])
