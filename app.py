@@ -85,7 +85,8 @@ CREATE TABLE IF NOT EXISTS meals (
 CREATE TABLE IF NOT EXISTS photos (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     meal_id INTEGER NOT NULL REFERENCES meals(id) ON DELETE CASCADE,
-    filename TEXT NOT NULL
+    filename TEXT NOT NULL,
+    shared INTEGER NOT NULL DEFAULT 0        -- 1: offered to Cookbook Collection for the recipe's page (public there)
 );
 CREATE INDEX IF NOT EXISTS idx_meals_day ON meals(day DESC);
 CREATE INDEX IF NOT EXISTS idx_photos_meal_id ON photos(meal_id);
@@ -357,6 +358,9 @@ with sqlite3.connect(DB_PATH) as _c:
     for _col in ("cookbook_book_uid", "cookbook_recipe_uid"):
         if _col not in _cols:
             _c.execute(f"ALTER TABLE meals ADD COLUMN {_col} TEXT")
+    # ...and before a photo could be shared with it. Existing photos stay private (0); nothing to backfill.
+    if "shared" not in [r[1] for r in _c.execute("PRAGMA table_info(photos)")]:
+        _c.execute("ALTER TABLE photos ADD COLUMN shared INTEGER NOT NULL DEFAULT 0")
 
 
 def image_formats():
@@ -479,6 +483,18 @@ def parse_cookbook_uid(raw):
     """A Cookbook Collection uid (32 lowercase hex characters), else None."""
     raw = str(raw if raw is not None else "").strip().lower()
     return raw if UID_RE.fullmatch(raw) else None
+
+
+# A photo may be shown on its recipe's page in Cookbook Collection only while its dinner can resolve to a recipe
+# there: a cookbook or website source, or a stamped catalog uid. /api/history and /api/photos/<file> filter
+# with SHARED_PHOTO_SQL (aliases p = photos, m = meals) and the edit form with share_eligible(); keep them alike.
+SHARED_PHOTO_SQL = (f"p.shared = 1 AND (m.source_type IN ({', '.join(repr(s) for s in CATALOG_SOURCES)}) "
+                    "OR m.cookbook_book_uid IS NOT NULL OR m.cookbook_recipe_uid IS NOT NULL)")
+
+
+def share_eligible(source_type, book_uid, recipe_uid):
+    """Whether a dinner's photos may be offered to Cookbook Collection (see SHARED_PHOTO_SQL)."""
+    return source_type in CATALOG_SOURCES or bool(parse_cookbook_uid(book_uid) or parse_cookbook_uid(recipe_uid))
 
 
 def parse_meal_params(params, default_source="cookbook"):
