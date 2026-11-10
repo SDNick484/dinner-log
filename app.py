@@ -1233,11 +1233,28 @@ def get_meal(meal_id):
 def meal_detail(meal_id):
     meal, photos = get_meal(meal_id)
     skipped = request.args.get("skipped", "")
-    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES,
+    return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES, share_ok=meal_share_ok(meal),
                            skipped=int(skipped) if skipped.isdigit() else 0,
                            supported_formats=supported_formats_label(),
                            last_time=last_time_panel(meal["cookbook_recipe_uid"], meal["name"],
                                                      exclude_id=meal_id, other=True))
+
+
+def meal_share_ok(meal):
+    return share_eligible(meal["source_type"], meal["cookbook_book_uid"], meal["cookbook_recipe_uid"])
+
+
+def set_shared(meal_id, photos, v):
+    """Apply the form's "Show on the cookbook page" boxes: a checked box shares the photo, an unchecked one
+    unshares it, and a dinner that can no longer resolve to a catalog recipe has all its photos unshared, so
+    switching its source back later never re-shares anything by itself. Only this meal's existing photos
+    count; any other id in the form is ignored."""
+    mine = {p["id"] for p in photos}
+    want = set()
+    if share_eligible(v["source_type"], v["cookbook_book_uid"], v["cookbook_recipe_uid"]):
+        want = {int(x) for x in request.form.getlist("share_photo") if x.isdigit()} & mine
+    db().executemany("UPDATE photos SET shared=? WHERE id=? AND meal_id=?",
+                     [(int(pid in want), pid, meal_id) for pid in mine])
 
 
 @app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])
@@ -1259,6 +1276,7 @@ def edit_meal(meal_id):
                 f"SELECT filename FROM photos WHERE meal_id=? AND id IN ({marks})",
                 [meal_id, *drop])]
             db().execute(f"DELETE FROM photos WHERE meal_id=? AND id IN ({marks})", [meal_id, *drop])
+        set_shared(meal_id, photos, v)  # before the uploads, so a new photo can't be shared by a guessed id
         skipped = save_photos(meal_id, request.files.getlist("photos"))
         db().commit()
         remove_photo_files(names)  # only once the rows are gone for good
@@ -1266,7 +1284,7 @@ def edit_meal(meal_id):
     skipped = request.args.get("skipped", "")
     return render_template("form.html", meal=meal, photos=photos, types=SOURCE_TYPES,
                            books=titles_for("cookbook"), places=titles_for("restaurant"),
-                           editing=True, shared=request.args.get("shared") == "1",
+                           share_ok=meal_share_ok(meal), editing=True, shared=request.args.get("shared") == "1",
                            skipped=int(skipped) if skipped.isdigit() else 0,
                            supported_formats=supported_formats_label())
 

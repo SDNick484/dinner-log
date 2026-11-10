@@ -51,6 +51,7 @@
       <a href="{{ url_for('photo', filename=p.filename) }}" target="_blank">
         <img src="{{ url_for('photo', filename=p.filename) }}" alt="Photo of {{ meal.name }}" loading="lazy">
       </a>
+      {% if p.shared and share_ok %}<p class="shared-mark">On the cookbook page (public)</p>{% endif %}
     {% endfor %}
   </div>
   {% endif %}
