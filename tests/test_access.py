@@ -327,6 +327,17 @@ def test_exemptions_are_explicit(app_on):
             assert get(c, rule.rule).status_code in (401, 404), rule.rule
 
 
+def test_share_target_is_gated(app_on):
+    """The manifest's share_target posts to /share; it's a write route like /new, never exempt."""
+    a, c, _, _ = app_on
+    r = c.post("/share", data={"title": "x"}, base_url=LAN_URL, environ_base=LAN_PEER)
+    assert r.status_code == 403
+    ok = c.post("/share", data={"title": "x"}, base_url="https://dinners.example.com",
+                environ_base={"REMOTE_ADDR": "127.0.0.1"},
+                headers={**CF, "Cf-Access-Jwt-Assertion": token(), "Sec-Fetch-Site": "none"})
+    assert ok.status_code == 200
+
+
 # ------------------------------------------------------------------ LAN_ACCESS
 @pytest.fixture()
 def lan_on(tmp_path, env):

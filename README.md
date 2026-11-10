@@ -12,7 +12,7 @@ For each dinner you can record:
 - A **1–10 rating** (optional)
 - **Notes** and any number of **photos**
 
-It's built for phones: a big "+" button, camera/gallery photo picker, installable to the home screen as a PWA. The log is searchable and grouped by month. Cookbook and restaurant names autocomplete from what you've entered before.
+It's built for phones: a big "+" button, camera/gallery photo picker, installable to the home screen as a PWA, and once installed it shows up in Android's share sheet, so a photo or a recipe link can be shared straight into a new dinner. The log is searchable and grouped by month. Cookbook and restaurant names autocomplete from what you've entered before.
 
 Flask + SQLite, no external services. Photos are stored on disk and downscaled on upload (1600 px long edge, JPEG, with a 480 px thumbnail beside each; see [Photos](#photos)).
 
@@ -82,7 +82,9 @@ Building needs `python3`, `base64` and `tar` (GNU or busybox) on the machine you
 
 ## Photos
 
-Uploads are decoded only as JPEG, PNG or WebP (and HEIC when the optional `pillow-heif` package is installed). Pillow's other decoders are never used on uploads, and anything else, or an image over about 40 megapixels once decoded, is skipped and reported on the dinner's page. Each accepted photo is re-encoded as a JPEG with no EXIF, so phone location data is dropped, and saved as `<id>.jpg` (1600 px long edge) in `photos/`, with a 480 px thumbnail `<id>-t.jpg` beside it. The feed and the edit form show the thumbnail; a dinner's own page shows the full image. If a thumbnail is missing, the full image is shown instead. Backups copy the thumbnails along with the photos; they can always be regenerated with `backfill_thumbs`. Photos are served with `Cache-Control: private, max-age=31536000, immutable` (their names never change), so a browser keeps them for a year but a shared cache or CDN in front of the app won't.
+**In the browser first.** Before the form is sent, the page re-encodes JPEG, PNG and WebP photos itself: turned upright, scaled to 1600 px on the long edge and saved as JPEG (quality 0.85, transparency on white). That makes uploads from a phone a fraction of the size, and since the re-encoded file carries no EXIF, location data never leaves the phone. Anything the browser can't decode (often HEIC on Android) is sent as it is. Save reads *Preparing photos…* while this runs. The server never relies on it: every upload goes through the checks below either way.
+
+**On the server.** Uploads are decoded only as JPEG, PNG or WebP (and HEIC when the optional `pillow-heif` package is installed). Pillow's other decoders are never used on uploads, and anything else, or an image over about 40 megapixels once decoded, is skipped and reported on the dinner's page. Each accepted photo is re-encoded as a JPEG with no EXIF, so phone location data is dropped, and saved as `<id>.jpg` (1600 px long edge) in `photos/`, with a 480 px thumbnail `<id>-t.jpg` beside it. The feed and the edit form show the thumbnail; a dinner's own page shows the full image. If a thumbnail is missing, the full image is shown instead. Backups copy the thumbnails along with the photos; they can always be regenerated with `backfill_thumbs`. Photos are served with `Cache-Control: private, max-age=31536000, immutable` (their names never change), so a browser keeps them for a year but a shared cache or CDN in front of the app won't.
 
 ### HEIC photos (optional)
 
@@ -304,11 +306,39 @@ Then restart. Every request, including the service worker, manifest and icons, m
 
 `LAN_ACCESS` means "anyone who can reach the port from those networks", so keep it off on networks you don't trust. **Under Docker**, check the address the app sees before relying on it: rootless Docker and Podman (and connections to a published port from the host itself) can show every client as one internal address, which would let everyone in. Leave it off there, or bind the port to loopback.
 
+**Sharing.** `POST /share` (the share target's fallback, see *Sharing to Dinner Log*) is a write route like `/new`: behind the same login, the same Access check and the same cross-site check, and its photos go through the same upload checks. Shares the service worker handles never leave the phone until you save the form; they sit in the app's own browser storage, readable only by the app's pages, and are deleted once loaded or after a day.
+
 **Cross-site requests.** Because login lives in the proxy's cookie, the app refuses POSTs that browsers mark as coming from another site, including sibling subdomains (`Sec-Fetch-Site: cross-site` or `same-site`). This check doesn't depend on the `Host` header, so it works behind proxies that rewrite it (nginx does by default). For browsers that don't send that header, it falls back to comparing `Origin` with `Host` / `X-Forwarded-Host`. To let a specific sibling site post, list its origin in `TRUSTED_ORIGINS` (e.g. `https://other.example.com`).
 
 ## Installing on a phone
 
 Open the site in Chrome on Android and choose **Add to Home screen** (or **Install app**). Chrome only offers a full install over HTTPS; over plain HTTP you still get a home-screen shortcut. If you use an authenticating proxy, the web manifest is requested with credentials so that installing keeps working behind it.
+
+### Sharing to Dinner Log
+
+Installed over HTTPS, the app appears in Android's share sheet (the manifest's `share_target`):
+
+- **Photos** from the gallery or camera open *Log a dinner* with the photos already attached.
+- **A link** from Chrome or a recipe app opens the form as an *Online* dinner: the page title as the dish, the address as the link, its host as the site.
+
+Only an installed app is offered as a share target; a home-screen shortcut over HTTP isn't. **After upgrading to a version that changes the manifest** (this is the first one with a share target), Android may not pick the change up for an existing install: remove the app from the home screen and install it again. Your data is on the server, so nothing is lost.
+
+How it works: the app's service worker answers the share itself, without the network. It keeps what was shared in the browser's own storage under a random one-time key and opens the form, which loads it and deletes it. So a share works even when your proxy's login has expired (the proxy would otherwise send the upload to its login page and lose it), and the shared text never appears in a URL. Unused shares are deleted after a day.
+
+Right after installing, before the service worker is running, a share goes to the server instead (`POST /share`). It doesn't drop anything: shared photos are saved at once as a new dinner and you land on its edit page to fill in the rest (delete it from its page if you didn't want it); a link alone opens the filled-in form without saving. One limit remains: saving the form itself still needs a live login, as before, so if the proxy's session has expired the upload is lost and you share again from the gallery.
+
+**Checking it on a phone** (Chrome on Android, after deploying):
+
+1. Remove any existing install, open the site over HTTPS and install it. Open the app once, then close it.
+2. In the gallery, share one photo to *Dinner Log*. The form opens with the photo previewed; no "expired" notice.
+3. Save. The dinner shows the photo the right way up. (Uploads should now be a few hundred KB, not several MB.)
+4. Share three photos at once, including a portrait one; all three arrive, upright.
+5. Take a photo from the camera app and share it from there.
+6. In Chrome, open a recipe page and share it to *Dinner Log*. The form opens on *Online* with the title, link and site filled in.
+7. Share a photo, then reload the form: it says the share expired or was already loaded (the photo is still in the gallery).
+8. If your camera saves HEIC: share one. It is sent unchanged; with `pillow-heif` on the server it's accepted, without it the dinner page says it was skipped.
+9. With your proxy's session expired (sign out of it in Chrome), share a photo: the form still opens with it. Sign in again before saving.
+10. Edit an existing dinner and add a large photo: Save shows *Preparing photos…* briefly, then saves.
 
 ## Development
 
