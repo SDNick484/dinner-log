@@ -165,3 +165,43 @@ def test_detail_marks_shared_photos(share):
     assert "On the cookbook page" not in c.get(f"/meal/{mid}").get_data(as_text=True)
     edit(c, mid, [photo_rows(a, mid)[0][0]])
     assert "On the cookbook page" in c.get(f"/meal/{mid}").get_data(as_text=True)
+
+
+# ------------------------------------------------------------------ /api/history
+
+def test_history_lists_shared_photos_only(share):
+    a, c = share
+    mid = add_meal(c, 3)
+    rows = photo_rows(a, mid)
+    meal = history(c).get_json()["meals"][0]
+    assert meal["photos"] == []                           # always present, empty until something is shared
+    edit(c, mid, [rows[2][0], rows[0][0]])
+    body = history(c).get_json()
+    assert body["version"] == 1
+    assert body["meals"][0]["photos"] == [rows[0][1], rows[2][1]]   # ordered by photo id
+    assert all(not f.endswith("-t.jpg") for f in body["meals"][0]["photos"])
+
+
+def test_history_hides_shared_photos_of_ineligible_meals(share):
+    a, c = share
+    mid = add_meal(c, source_type="online", source_title="Blog", source_detail="https://blog.example.com/x")
+    con = sqlite3.connect(a.DB_PATH)                      # flag set, then the meal changed outside the form
+    con.execute("UPDATE photos SET shared=1")
+    con.execute("UPDATE meals SET source_type='restaurant'")
+    con.commit()
+    con.close()
+    meals = history(c).get_json()["meals"]
+    assert [m["id"] for m in meals] == [mid]             # still sent: its source holds a link
+    assert meals[0]["photos"] == []
+
+
+def test_history_etag_changes_when_sharing_changes(share):
+    a, c = share
+    mid = add_meal(c)
+    etag = history(c).headers["ETag"]
+    assert history(c, etag).status_code == 304
+    edit(c, mid, [photo_rows(a, mid)[0][0]])
+    shared = history(c, etag)
+    assert shared.status_code == 200 and shared.headers["ETag"] != etag
+    edit(c, mid)
+    assert history(c, shared.headers["ETag"]).status_code == 200

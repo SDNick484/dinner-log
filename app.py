@@ -1334,12 +1334,33 @@ HISTORY_FIELDS = ("id", "day", "name", "source_type", "source_title", "source_de
 
 def history_rows(con):
     """Meals Cookbook Collection can match to its catalog: from a cookbook or website, with a link, or
-    stamped with its ids. Restaurant and home-recipe dinners without a link are never sent."""
-    return [dict(zip(HISTORY_FIELDS, r)) for r in con.execute(
+    stamped with its ids. Restaurant and home-recipe dinners without a link are never sent.
+
+    Each meal carries "photos": the file names of its photos shared with the catalog (SHARED_PHOTO_SQL),
+    by photo id, else []. Cookbook Collection fetches them from /api/photos/<file>."""
+    meals = [dict(zip(HISTORY_FIELDS, r)) for r in con.execute(
         f"SELECT {', '.join(HISTORY_FIELDS)} FROM meals "
         "WHERE source_type IN ('cookbook', 'online') OR source_detail LIKE '%://%' OR source_title LIKE '%://%' "
         "OR cookbook_book_id IS NOT NULL OR cookbook_recipe_id IS NOT NULL "
         "OR cookbook_book_uid IS NOT NULL OR cookbook_recipe_uid IS NOT NULL ORDER BY id")]
+    shared = {}
+    for meal_id, filename in con.execute("SELECT p.meal_id, p.filename FROM photos p JOIN meals m ON m.id = p.meal_id "
+                                         f"WHERE {SHARED_PHOTO_SQL} ORDER BY p.id"):
+        shared.setdefault(meal_id, []).append(filename)
+    for m in meals:
+        m["photos"] = shared.get(m["id"], [])
+    return meals
+
+
+def history_token_refusal():
+    """None when the request carries HISTORY_TOKEN as a bearer token, else the response to send: 404 while
+    no token is configured (the history routes don't exist), 401 for a missing or wrong one."""
+    if not HISTORY_TOKEN:
+        abort(404)
+    auth = request.headers.get("Authorization", "")
+    if auth[:7].lower() != "bearer " or not hmac.compare_digest(auth[7:].strip().encode(), HISTORY_TOKEN.encode()):
+        return {"error": "unauthorized"}, 401
+    return None
 
 
 @app.route("/api/history")
@@ -1347,11 +1368,9 @@ def history_rows(con):
 def history():
     """Read-only cooking history for Cookbook Collection, behind HISTORY_TOKEN. The whole list every time,
     with an ETag so an unchanged history costs a 304."""
-    if not HISTORY_TOKEN:
-        abort(404)
-    auth = request.headers.get("Authorization", "")
-    if auth[:7].lower() != "bearer " or not hmac.compare_digest(auth[7:].strip().encode(), HISTORY_TOKEN.encode()):
-        return {"error": "unauthorized"}, 401
+    refused = history_token_refusal()
+    if refused:
+        return refused
     body = json.dumps({"version": HISTORY_VERSION, "meals": history_rows(db())}, separators=(",", ":")).encode()
     etag = '"' + hashlib.sha256(body).hexdigest() + '"'
     headers = {"ETag": etag, "Cache-Control": "private, no-store"}
