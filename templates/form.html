@@ -333,5 +333,64 @@
     }
   }
   loadShared();
+
+  // Shrink photos before they leave the phone: JPEG, PNG and WebP are decoded upright (EXIF
+  // orientation applied), scaled to MAX_EDGE on the long side and re-encoded as JPEG, which also drops
+  // EXIF, GPS included. Anything the browser can't decode (often HEIC) goes up unchanged. The server
+  // validates and resizes every upload regardless; this only saves the upload time and data.
+  const MAX_EDGE = 1600, QUALITY = 0.85;
+  const RESIZABLE = new Set(['image/jpeg', 'image/png', 'image/webp']);
+  const saveBtn = form.querySelector('button[type=submit]');
+  const saveLabel = saveBtn.textContent;
+  let submitting = false;
+
+  async function shrink(file) {
+    if (!RESIZABLE.has(file.type) || !window.createImageBitmap) return file;
+    let bmp;
+    try {
+      bmp = await createImageBitmap(file, {imageOrientation: 'from-image'});
+      const scale = Math.min(1, MAX_EDGE / Math.max(bmp.width, bmp.height));
+      const w = Math.max(1, Math.round(bmp.width * scale));
+      const h = Math.max(1, Math.round(bmp.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.fillStyle = '#fff';                // JPEG has no alpha: flatten transparency onto white
+      ctx.fillRect(0, 0, w, h);
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(bmp, 0, 0, w, h);
+      const blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', QUALITY));
+      canvas.width = canvas.height = 0;      // hand the backing store back before the next photo
+      if (!blob) return file;
+      return new File([blob], file.name.replace(/\.[^.]*$/, '') + '.jpg',
+                      {type: 'image/jpeg', lastModified: file.lastModified});
+    } catch (e) {
+      return file;                           // can't decode it here: the server decides
+    } finally {
+      if (bmp) bmp.close();
+    }
+  }
+
+  form.addEventListener('submit', async e => {
+    if (submitting) { e.preventDefault(); return; }   // a second tap or Enter while we work
+    const files = [...photosInput.files];
+    if (!files.length || !window.DataTransfer) return;  // nothing to shrink: a normal submit
+    e.preventDefault();
+    submitting = true;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Preparing photos…';
+    try {
+      const dt = new DataTransfer();
+      for (const f of files) dt.items.add(await shrink(f));   // one at a time: phones are short on memory
+      photosInput.files = dt.files;
+    } catch (err) {
+      photosInput.files = (() => { const dt = new DataTransfer(); files.forEach(f => dt.items.add(f)); return dt.files; })();
+    }
+    form.submit();   // doesn't fire 'submit' again; validation already passed
+  });
+  // Back from the next page (bfcache): make Save usable again.
+  window.addEventListener('pageshow', () => {
+    submitting = false; saveBtn.disabled = false; saveBtn.textContent = saveLabel;
+  });
 </script>
 {% endblock %}
