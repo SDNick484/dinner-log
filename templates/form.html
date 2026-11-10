@@ -7,6 +7,7 @@
   <a href="{{ url_for('meal_detail', meal_id=meal['id']) }}">delete it from its page</a>.
   {% if skipped %}{{ skipped }} photo{{ 's' if skipped != 1 }} couldn’t be read; only {{ supported_formats }} photos are supported.{% endif %}</p>
 {% endif %}
+<p class="notice" role="status" id="share-notice" hidden></p>
 <form method="post" enctype="multipart/form-data" class="form"
       action="{{ url_for('edit_meal', meal_id=meal['id']) if editing else url_for('new_meal') }}">
   <input type="hidden" name="cookbook_book_id" id="cookbook-book-id" value="{{ meal['cookbook_book_id'] or '' }}">
@@ -244,5 +245,93 @@
       box.appendChild(img);
     }
   });
+
+  // Shared from another app: static/sw.js stashed the files and title/text/url under ?shared=<key>.
+  // Load them into the form, then delete the stash (it's single-use; the photos are still in the
+  // phone's gallery if this page is reloaded). sharePrefill mirrors share_prefill in app.py.
+  const SHARE_CACHE = 'dinner-log-share';
+  const photosInput = document.getElementById('photos');
+
+  function shareLink(raw) {
+    raw = (raw || '').trim().replace(/[.,;:!?)\]}]+$/, '');
+    if (!raw || raw.length > 2000) return null;
+    try {
+      const u = new URL(raw);
+      return (u.protocol === 'http:' || u.protocol === 'https:') && u.hostname ? raw : null;
+    } catch (e) { return null; }
+  }
+
+  function sharePrefill(title, text, url) {
+    const squash = s => s.split(/\s+/).filter(Boolean).join(' ');
+    title = squash(title || '').slice(0, 200);
+    text = (text || '').trim();
+    let link = shareLink(url);
+    if (link) {
+      text = text.split(link).join(' ');
+    } else {
+      const m = /https?:\/\/[^\s<>"']+/i.exec(text);
+      link = m && shareLink(m[0]);
+      if (link) text = text.slice(0, m.index) + ' ' + text.slice(m.index + m[0].length);
+    }
+    let rest = squash(text);
+    if (rest === title) rest = '';
+    const out = {name: title, notes: rest.slice(0, 2000)};
+    if (link) {
+      const host = new URL(link).hostname.toLowerCase();
+      Object.assign(out, {source_type: 'online', source_detail: link,
+                          source_title: host.startsWith('www.') ? host.slice(4) : host});
+    }
+    return out;
+  }
+
+  async function loadShared() {
+    const key = new URLSearchParams(location.search).get('shared');
+    if (!key) return;
+    const notice = document.getElementById('share-notice');
+    const say = msg => { notice.textContent = msg; notice.hidden = false; };
+    const gone = 'What you shared has expired or was already loaded. Share it again, or add the photos below.';
+    if (!/^[0-9a-f-]{36}$/.test(key) || !('caches' in window)) { say(gone); return; }
+    try {
+      const cache = await caches.open(SHARE_CACHE);
+      const base = `/__share/${key}/`;
+      const metaRes = await cache.match(base + 'meta');
+      if (!metaRes) { say(gone); return; }   // used, swept, or never finished
+      const meta = await metaRes.json();
+      const files = [];
+      for (let i = 0; i < meta.files; i++) {
+        const r = await cache.match(base + 'file/' + i);
+        if (!r) continue;
+        const blob = await r.blob();
+        let name = '';
+        try { name = decodeURIComponent(r.headers.get('X-Share-Name') || ''); } catch (e) { /* keep '' */ }
+        const type = blob.type === 'application/octet-stream' ? '' : blob.type;
+        files.push(new File([blob], name || `shared-${i + 1}.jpg`, {type}));
+      }
+      if (files.length) {
+        const dt = new DataTransfer();
+        files.forEach(f => dt.items.add(f));
+        photosInput.files = dt.files;
+        photosInput.dispatchEvent(new Event('change'));
+      }
+      const p = sharePrefill(meta.title, meta.text, meta.url);
+      if (p.source_type) {
+        const radio = form.querySelector(`input[name=source_type][value="${p.source_type}"]`);
+        radio.checked = true;
+        radio.dispatchEvent(new Event('change'));   // labels, ids, recipe picker
+        titleInput.value = p.source_title;
+        detailInput.value = p.source_detail;
+      }
+      if (p.name) nameInput.value = p.name;
+      if (p.notes) form.querySelector('[name=notes]').value = p.notes;
+      if (files.length < meta.files) {
+        say(`${meta.files - files.length} of the shared photos couldn’t be loaded. Add them again below.`);
+      }
+      const keys = await cache.keys();
+      await Promise.all(keys.filter(r => new URL(r.url).pathname.startsWith(base)).map(r => cache.delete(r)));
+    } catch (e) {
+      say('Couldn’t load what you shared. Share it again, or add the photos below.');
+    }
+  }
+  loadShared();
 </script>
 {% endblock %}
