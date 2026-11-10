@@ -1,4 +1,6 @@
 """The "Last time" panel: which past dinners count as the same dish, and what the panel says about them."""
+import datetime
+
 from test_app import load_app
 
 U1 = "a" * 32
@@ -172,3 +174,75 @@ def test_empty_database(tmp_path):
     a = load_app(tmp_path)
     with a.app.app_context():
         assert a.previous_times(U1, "Anything") == {"count": 0, "best": None, "recent": []}
+
+
+# ------------------------------------------------------------------ the panel's wording
+def test_summary_wording(tmp_path):
+    a = load_app(tmp_path)
+    s = a.last_time_summary
+    assert s(6, 9) == "made 6 times · best 9/10"
+    assert s(1, 8) == "made once · best 8/10"
+    assert s(3, None) == "made 3 times"
+    assert s(6, 9, other=True) == "made 6 other times · best 9/10"
+    assert s(1, None, other=True) == "made 1 other time"
+    assert s(0, None) == ""
+
+
+def test_panel_entries_are_clipped_dated_and_linked(tmp_path):
+    a = load_app(tmp_path)
+    with a.app.test_request_context():
+        long_note = "Needs   more\nsalt. " + "word " * 60
+        i = add(a, "2026-10-01", "Flatbread", 8, long_note)
+        j = add(a, "2026-10-02", "Flatbread", None, "short note")
+        panel = a.last_time_panel(None, "Flatbread")
+        assert panel["summary"] == "made 2 times · best 8/10"
+        newest, older = panel["recent"]
+        assert newest["notes"] == "short note" and newest["rating"] is None
+        assert newest["when"] == "Fri Oct 2, 2026" and newest["url"] == f"/meal/{j}"
+        assert older["url"] == f"/meal/{i}"
+        assert len(older["notes"]) <= 140 and older["notes"].endswith("…")
+        assert older["notes"].startswith("Needs more salt. word word")   # whitespace collapsed
+
+
+# ------------------------------------------------------------------ detail page and pick card
+def test_detail_page_lists_other_times_newest_first_with_dates(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    with a.app.app_context():
+        old = add(a, "2026-01-05", "Gumbo", 7, "A bit thin")
+        this = add(a, "2026-03-09", "Gumbo", 9, "The one")
+        new = add(a, "2026-06-01", "Gumbo", 8, "Even better <b>x</b>")
+    page = c.get(f"/meal/{this}").get_data(as_text=True)
+    assert "Last time" in page and "made 2 other times · best 8/10" in page    # best of the others, not this one
+    assert page.index("Mon Jun 1, 2026") < page.index("Mon Jan 5, 2026")       # newer one listed too, newest first
+    assert f'href="/meal/{old}"' in page and f'href="/meal/{new}"' in page
+    assert page.count("The one") == 1                                           # the dinner itself only in its own notes
+    assert "A bit thin" in page and "Even better &lt;b&gt;x&lt;/b&gt;" in page   # notes are escaped
+
+
+def test_detail_page_of_a_first_time_dish_has_no_panel(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    with a.app.app_context():
+        first = add(a, "2026-01-05", "Gumbo", 7, "Solo")
+        add(a, "2026-01-06", "Something else")
+    assert "Last time" not in c.get(f"/meal/{first}").get_data(as_text=True)
+
+
+def test_pick_card_shows_every_time_the_dish_was_made(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    today = a.local_today()
+    with a.app.app_context():
+        add(a, (today - datetime.timedelta(days=100)).isoformat(), "Gumbo", 7, "Needed salt")
+        add(a, (today - datetime.timedelta(days=60)).isoformat(), "Gumbo", 9, "Perfect")
+    page = c.get("/?suggest=1").get_data(as_text=True)
+    assert "Tonight's Idea" in page and "Last time" in page
+    assert "made 2 times · best 9/10" in page and "Needed salt" in page and "Perfect" in page
+
+
+def test_pick_card_without_history_has_no_panel(tmp_path):
+    a = load_app(tmp_path)
+    c = a.app.test_client()
+    page = c.get("/?suggest=1").get_data(as_text=True)
+    assert "Last time" not in page

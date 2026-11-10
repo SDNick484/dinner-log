@@ -828,6 +828,40 @@ def previous_times(recipe_uid, name, exclude_id=None, limit=3):
     return out
 
 
+LAST_TIME_NOTE_CHARS = 140
+
+
+def _clip(text, limit=LAST_TIME_NOTE_CHARS):
+    """One line of at most `limit` characters: whitespace collapsed, cut with an ellipsis."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def last_time_summary(count, best, other=False):
+    """'made 6 times · best 9/10'. `other` is for the page of a dinner that is itself one of them."""
+    if not count:
+        return ""
+    if other:
+        head = "made 1 other time" if count == 1 else f"made {count} other times"
+    else:
+        head = "made once" if count == 1 else f"made {count} times"
+    return head + (f" · best {best}/10" if best is not None else "")
+
+
+def last_time_panel(recipe_uid, name, exclude_id=None, other=False):
+    """previous_times, ready for the page and the JSON route: a summary line and, per dinner, a date
+    label, a link and the notes clipped to one line. The full notes never leave through here."""
+    lt = previous_times(recipe_uid, name, exclude_id)
+    return {
+        "count": lt["count"],
+        "best": lt["best"],
+        "summary": last_time_summary(lt["count"], lt["best"], other),
+        "recent": [{"id": t["id"], "day": t["day"], "when": f"{pretty_day(t['day'])}, {t['day'][:4]}",
+                    "rating": t["rating"], "notes": _clip(t["notes"]),
+                    "url": url_for("meal_detail", meal_id=t["id"])} for t in lt["recent"]],
+    }
+
+
 def local_dishes(today, source="", rest_days=REST_DAYS, rating_min=None):
     """Every past dish eligible for a suggestion, as dicts ready for the card.
 
@@ -1052,6 +1086,9 @@ def index():
     suggestion, pick_info = (pick_for_tonight(source=cur_source, fav=cur_fav == "1", mode=pick_mode or None,
                                               include=include, exclude=exclude)
                              if suggest == "1" else (None, None))
+    # Tonight isn't logged yet, so every earlier time counts: nothing to exclude.
+    last_time = (last_time_panel(suggestion.get("cookbook_recipe_uid"), suggestion["name"])
+                 if suggestion else None)
 
     return render_template(
         "index.html",
@@ -1067,6 +1104,7 @@ def index():
         pick_modes=PICK_MODES,
         cur_mode=pick_mode or ("fav" if cur_fav == "1" else "any"),
         older=older,
+        last_time=last_time,
     )
 
 
@@ -1103,7 +1141,9 @@ def meal_detail(meal_id):
     skipped = request.args.get("skipped", "")
     return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES,
                            skipped=int(skipped) if skipped.isdigit() else 0,
-                           supported_formats=supported_formats_label())
+                           supported_formats=supported_formats_label(),
+                           last_time=last_time_panel(meal["cookbook_recipe_uid"], meal["name"],
+                                                     exclude_id=meal_id, other=True))
 
 
 @app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])

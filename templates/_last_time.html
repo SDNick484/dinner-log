@@ -1,0 +1,17 @@
+{# "Last time": what we said about earlier dinners of this dish. Included by detail.html and index.html
+   with `last_time` from last_time_panel(); renders nothing for a dish that was never made before.
+   form.html builds the same markup in JS from /last-time, so keep the two in step. #}
+{% if last_time and last_time.count %}
+<section class="last-time" aria-label="Last time">
+  <h2 class="last-time-head">Last time <span class="last-time-sum">{{ last_time.summary }}</span></h2>
+  <ul class="last-time-list">
+    {% for t in last_time.recent %}
+    <li><a class="lt-line" href="{{ t.url }}">
+      <span class="lt-when">{{ t.when }}</span>
+      {% if t.rating %}<span class="score">★ {{ t.rating }}/10</span>{% endif %}
+      {% if t.notes %}<span class="lt-notes">{{ t.notes }}</span>{% endif %}
+    </a></li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
