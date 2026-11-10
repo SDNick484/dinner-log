@@ -27,5 +27,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=60s --timeout=5s --start-period=10s \
   CMD wget -q -O /dev/null http://127.0.0.1:8000/healthz || exit 1
 ENTRYPOINT ["docker-entrypoint.sh"]
-# Single worker is plenty for a family; SQLite likes it that way.
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "-w", "1", "--threads", "4", "app:app"]
+# Single worker is plenty for a family; SQLite likes it that way. No control socket: gunicorn would put it
+# under the app user's $HOME, which the image doesn't have, and nothing here uses gunicornc.
+CMD ["gunicorn", "-b", "0.0.0.0:8000", "-w", "1", "--threads", "4", "--no-control-socket", "app:app"]

@@ -1,5 +1,8 @@
 # Dinner Log
 
+[![CI](https://github.com/SDNick484/dinner-log/actions/workflows/ci.yml/badge.svg)](https://github.com/SDNick484/dinner-log/actions/workflows/ci.yml)
+[![Seam contract](https://github.com/SDNick484/dinner-log/actions/workflows/contract.yml/badge.svg)](https://github.com/SDNick484/dinner-log/actions/workflows/contract.yml)
+
 A small self-hosted web app for keeping track of what your household cooks (or eats out) for dinner.
 
 For each dinner you can record:
@@ -75,7 +78,7 @@ scp dist/setup-dinner-log.sh root@<server>:
 DINNER_PORT=8000 DINNER_BIND=127.0.0.1 DINNER_TZ=America/Chicago sh setup-dinner-log.sh   # on the server, as root
 ```
 
-It unpacks the app to a temporary folder and runs the same `deploy/install-alpine.sh`. Re-run the installer (either way) after `git pull` to upgrade. Your data is kept, and so are your settings in `/etc/conf.d/dinner-log`; any `DINNER_*` variable you pass updates just that setting. `DINNER_BIND` defaults to `0.0.0.0` (all interfaces); see Security below.
+Building needs `python3`, `base64` and `tar` (GNU or busybox) on the machine you build on. The installer unpacks the app to a temporary folder and runs the same `deploy/install-alpine.sh`. Re-run the installer (either way) after `git pull` to upgrade. Your data is kept, and so are your settings in `/etc/conf.d/dinner-log`; any `DINNER_*` variable you pass updates just that setting. `DINNER_BIND` defaults to `0.0.0.0` (all interfaces); see Security below.
 
 ## Photos
 
@@ -298,7 +301,29 @@ Open the site in Chrome on Android and choose **Add to Home screen** (or **Insta
 ```sh
 pip install -r requirements.txt pytest
 pytest
+CI_STRICT=1 pytest      # what CI runs: a skipped test fails the run
 ```
+
+Some tests skip when something they need is missing (PyJWT, `pillow-heif`, `sh`/`tar`/`base64`, a git checkout). With `CI_STRICT=1` each skip fails the run and is listed with its reason; `CI_ALLOW_SKIP` takes comma-separated globs of test ids a run may skip (e.g. `tests/test_photos.py::test_real_heic_*` without `pillow-heif`).
+
+## Continuous integration
+
+GitHub Actions, on every push, weekly, and on pull requests from forks:
+
+- **`CI`** ([ci.yml](.github/workflows/ci.yml))
+  - *lint*: `sh -n` and `shellcheck` on the shell scripts.
+  - *pytest*: the strict suite on Python 3.12, 3.13 and 3.14, with and without `pillow-heif`.
+  - *alpine*: builds the one-file installer and runs it in an Alpine container under real OpenRC, on a pinned Alpine release (3.24) and, without blocking, on `alpine:latest` (each with and without `DINNER_HEIC=1`). Then it runs the strict suite on Alpine's Python packages and checks the installed service ([check-installed.sh](.github/scripts/check-installed.sh)): health, owners and modes, the generated `HISTORY_TOKEN`, photo upload and thumbnails, `/api/history`, the backup job, `backfill_thumbs`, the Access gate with placeholder settings, and a rerun of the installer.
+  - *docker*: builds the image, runs it on an empty folder and checks the health check, a photo upload, uid 10001 ownership and a non-root process.
+- **`Seam contract`** ([contract.yml](.github/workflows/contract.yml)): runs this app beside Cookbook Collection's `main` on loopback and checks the contract in its `docs/seam.md` (recipe uids, history matching by uid, "Pick for tonight" with `COOKBOOK_TOKEN`, `backfill_uids`). It also runs nightly, since the catalog changes on its own. To run it locally against your own checkouts:
+
+```sh
+sh .github/scripts/start-seam.sh ../cookbook-collection <catalog-venv> <this-venv> > seam.env   # adds catalog.test to /etc/hosts
+set -a; . ./seam.env; set +a
+CI_STRICT=1 pytest tests/contract
+```
+
+Dependabot proposes weekly updates for the Actions, the Docker base image and the pip requirements.
 
 ## License
 

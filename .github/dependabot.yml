@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # Actions are pinned to commit SHAs; this keeps the SHAs (and their version comments) current.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # The Dockerfile's base image (python:3.12-alpine). The tag has no patch level, so the PRs here move
+  # Python itself (3.12 -> 3.13); CI's Docker job runs each one.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  # requirements.txt (Docker and dev) and deploy/requirements-heic.txt. Production on Alpine uses apk, not pip,
+  # and these are floors, so one grouped PR a week is plenty.
+  - package-ecosystem: pip
+    directories: ["/", "/deploy"]
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]

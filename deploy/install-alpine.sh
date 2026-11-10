@@ -109,7 +109,10 @@ chmod 600 "$CONF"  # holds COOKBOOK_TOKEN and HISTORY_TOKEN; OpenRC reads it as 
 echo "==> Installing nightly backup"
 # Always installed: on a host where Cookbook Collection's app-backup runs, the job skips itself each night,
 # so either install order works and nothing is backed up twice (or not at all if app-backup goes away).
+# $CONF is the service's settings file on this host, not a script in the repo, so shellcheck can't follow it.
+# shellcheck source=/dev/null
 CONF_DATA_DIR=$(. "$CONF"; echo "$DATA_DIR")
+# shellcheck source=/dev/null
 BACKUP_DIR=$(. "$CONF"; echo "${BACKUP_DIR:-/var/backups/dinner-log}")
 mkdir -p "$BACKUP_DIR"
 chown dinnerlog:dinnerlog "$BACKUP_DIR"

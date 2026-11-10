@@ -16,13 +16,15 @@ README.md is the user-facing guide; this file is how to work on the code. Its si
 | `backfill_thumbs.py` | One-off `python3 -m backfill_thumbs [--dry-run]`: writes the missing 480 px `<name>-t.jpg` thumbnails for photos from before they existed. Idempotent; exit 1 if any photo is missing or unreadable. Shipped in the installer |
 | `templates/` | `denied.html` (the Access 403 page, standalone), `base.html`, `index.html` (feed, filters, pick card, catch-up pills), `detail.html`, `form.html` (create/edit, recipe picker), `_pick_notes.html` |
 | `static/` | `style.css`, `sw.js` (network-first service worker, cache name `dinner-log-v2`), manifest and icons |
+| `.github/` | `workflows/ci.yml` (lint, pytest 3.12-3.14 x HEIC, Alpine installer under real OpenRC on 3.24 + non-blocking `latest`, Docker image), `workflows/contract.yml` (the seam with cookbook-collection `main`, also nightly), `scripts/` (`openrc-container.sh`, `check-installed.sh`, `check-docker.sh`, `start-seam.sh`), `dependabot.yml`. Keep the Alpine pin in `ci.yml` at the release production runs |
 | `deploy/` | `build.sh` -> `dist/setup-dinner-log.sh` (one-file Alpine/OpenRC installer), `install-alpine.sh`, `history-token.sh`, `dinner-log-backup` (cron job), `docker-entrypoint.sh`, `requirements-heic.txt` (the optional `pillow-heif` pin; Docker `HEIC` build arg, installer `DINNER_HEIC=1`) |
-| `tests/` | pytest. `test_app.py` has `load_app(data_dir)`; the rest build on it: `test_history*.py` (history feed and token), `test_uids.py`, `test_backfill.py`, `test_recipe_picker.py`, `test_suggest.py` (picker), `test_links.py` (catalog links, same-day grouping), `test_photos.py` (decoder allow-list, HEIC with and without the plugin), `test_thumbs.py`, `test_backfill_thumbs.py`, `test_photo_cache.py`, `test_security.py`, `test_access.py` (Access gate, key cache, LAN rules; skipped without PyJWT), `test_backup.py`, `test_paging.py`, `test_config.py`, `test_build.py` (the installer payload) |
+| `tests/` | pytest (`pytest.ini` pins the rootdir, so node ids read `tests/...`). `conftest.py` installs `strict_skips.py`: with `CI_STRICT=1` any skip fails the run except node-id globs in `CI_ALLOW_SKIP` (self-tests in `test_strict_skips.py`). `contract/` checks the seam over HTTP against running apps and skips without `CONTRACT_*` settings (`.github/scripts/start-seam.sh` sets them). `test_app.py` has `load_app(data_dir)`; the rest build on it: `test_history*.py` (history feed and token), `test_uids.py`, `test_backfill.py`, `test_recipe_picker.py`, `test_suggest.py` (picker), `test_links.py` (catalog links, same-day grouping), `test_photos.py` (decoder allow-list, HEIC with and without the plugin), `test_thumbs.py`, `test_backfill_thumbs.py`, `test_photo_cache.py`, `test_security.py`, `test_access.py` (Access gate, key cache, LAN rules; skipped without PyJWT), `test_backup.py`, `test_paging.py`, `test_config.py`, `test_build.py` (the installer payload), `test_hygiene.py` (public-repo hygiene, same rules as Cookbook Collection's) |
 
 ## Commands
 ```sh
 python -m pytest -q                                  # full suite, ~6 s
-sh deploy/build.sh                                   # -> dist/setup-dinner-log.sh (OUT=<path> to move it)
+CI_STRICT=1 python -m pytest -q                      # as CI runs it: any skip fails the run
+sh deploy/build.sh                                   # -> dist/setup-dinner-log.sh (OUT=<path> to move it); needs python3
 DATA_DIR=$(mktemp -d) python app.py                  # dev server on :8000
 docker compose up --build                            # reads .env (copy .env.example)
 ```
@@ -66,7 +68,8 @@ Deps: `pip install -r requirements.txt pytest`. The Alpine installer's package l
 - Keep READMEs accurate: update the README when setup steps, env vars or behaviour change.
 - Public repo (MIT): no real hostnames, IPs, container/VM IDs, tunnel IDs, tokens, family names or personal paths in
   code, docs, examples or commit messages. Use `cookbooks.example.com` / `dinner.example.com` and loopback addresses.
-  There is no hygiene test here (unlike Cookbook Collection), so grep your own diff for them.
+  `tests/test_hygiene.py` fails on container/VM IDs and home-directory paths in tracked files; hostnames, names and
+  emails can't be listed there without publishing them, so check your diff for those yourself.
 - Conventional commits (`feat:`, `fix:`, `docs:`), small and reviewable.
 
 ## Release flow
