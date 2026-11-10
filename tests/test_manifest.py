@@ -8,6 +8,7 @@ import pytest
 from test_app import ROOT, load_app
 
 MANIFEST = os.path.join(ROOT, "static", "manifest.json")
+SW = os.path.join(ROOT, "static", "sw.js")
 FORM = os.path.join(ROOT, "templates", "form.html")
 
 
@@ -50,6 +51,14 @@ def test_share_target_matches_the_server_and_the_form(manifest, tmp_path):
     r = c.post(st["action"], data={"title": "Pho", "text": "https://example.com/pho"},
                content_type=st["enctype"])
     assert r.status_code == 200 and 'value="Pho"' in r.get_data(as_text=True)
+
+
+def test_service_worker_intercepts_the_share_action(manifest):
+    """static/sw.js has its own copy of the action path and the files field; keep them in step."""
+    with open(SW, encoding="utf-8") as f:
+        sw = f.read()
+    assert re.search(r"SHARE_PATH\s*=\s*'" + re.escape(manifest["share_target"]["action"]) + "'", sw)
+    assert re.search(r"getAll\('" + manifest["share_target"]["params"]["files"][0]["name"] + "'\)", sw)
 
 
 def test_manifest_served(tmp_path):
