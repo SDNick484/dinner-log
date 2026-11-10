@@ -30,6 +30,12 @@
     <input type="text" name="name" value="{{ meal['name'] }}" placeholder="e.g. Chicken tikka masala" required autofocus>
   </label>
 
+  {# Filled in by the script below from /last-time; same markup as _last_time.html. #}
+  <section class="last-time" id="last-time" aria-label="Last time" aria-live="polite" hidden>
+    <h2 class="last-time-head">Last time <span class="last-time-sum" id="last-time-sum"></span></h2>
+    <ul class="last-time-list" id="last-time-list"></ul>
+  </section>
+
   <fieldset>
     <legend>Where did it come from?</legend>
     <div class="seg">
@@ -190,6 +196,7 @@
       bookIdInput.value = loadedBookId; recipeIdInput.value = r.id;
       bookUidInput.value = loadedBookUid || ''; recipeUidInput.value = r.uid || '';
     }
+    loadLastTime();
   }
 
   let titleTimer;
@@ -199,6 +206,62 @@
   recipeInput.addEventListener('input', pickRecipe);
   recipeInput.addEventListener('change', pickRecipe);
   loadRecipes();
+
+  // "Last time": what we said about earlier dinners of this dish. Asked once the name or the picked
+  // recipe settles. The server matches by recipe uid when there is one, else by name, and leaves out
+  // the dinner being edited. Notes are user text, so everything goes in through textContent.
+  const editId = '{{ meal["id"] if editing else "" }}';
+  const lastTime = document.getElementById('last-time');
+  const ltSum = document.getElementById('last-time-sum');
+  const ltList = document.getElementById('last-time-list');
+  let ltSeq = 0, ltKey = null, ltTimer;
+
+  function ltEl(tag, cls, text) {
+    const el = document.createElement(tag);
+    el.className = cls;
+    if (text) el.textContent = text;
+    return el;
+  }
+
+  function renderLastTime(data) {
+    if (!data || !data.count) { lastTime.hidden = true; ltList.replaceChildren(); return; }
+    ltSum.textContent = data.summary;
+    ltList.replaceChildren(...data.recent.map(t => {
+      const a = ltEl('a', 'lt-line');
+      a.href = t.url; a.target = '_blank'; a.rel = 'noopener noreferrer';   // don't lose what's typed here
+      a.append(ltEl('span', 'lt-when', t.when));
+      if (t.rating) a.append(ltEl('span', 'score', '★ ' + t.rating + '/10'));
+      if (t.notes) a.append(ltEl('span', 'lt-notes', t.notes));
+      const li = document.createElement('li');
+      li.append(a);
+      return li;
+    }));
+    lastTime.hidden = false;
+  }
+
+  async function loadLastTime() {
+    const name = nameInput.value.trim(), uid = recipeUidInput.value;
+    if (!uid && name.length < 3) { ltSeq++; ltKey = null; renderLastTime(null); return; }
+    const key = uid + '|' + name.toLowerCase();
+    if (key === ltKey) return;
+    const mine = ++ltSeq;
+    const q = new URLSearchParams({uid, name});
+    if (editId) q.set('exclude', editId);
+    let data = null;
+    try {
+      const res = await fetch('{{ url_for("last_time_route") }}?' + q, {credentials: 'same-origin'});
+      if (res.ok) data = await res.json();
+    } catch (e) { /* offline: the form works without it */ }
+    if (mine !== ltSeq) return;   // a newer name was typed meanwhile
+    ltKey = data ? key : null;    // a failed lookup is tried again on the next change
+    renderLastTime(data);
+  }
+
+  function loadLastTimeSoon() { clearTimeout(ltTimer); ltTimer = setTimeout(loadLastTime, 400); }
+  // Typing in these also forgets the recipe uid (clearIds above), which changes what matches.
+  [nameInput, titleInput, detailInput].forEach(el => el.addEventListener('input', loadLastTimeSoon));
+  form.querySelectorAll('input[name=source_type]').forEach(r => r.addEventListener('change', loadLastTimeSoon));
+  loadLastTime();
 
   // Rating: tap a number to set it, tap it again (or "Clear") to unset.
   const rateOut = document.getElementById('rating-out');
@@ -321,7 +384,7 @@
         titleInput.value = p.source_title;
         detailInput.value = p.source_detail;
       }
-      if (p.name) nameInput.value = p.name;
+      if (p.name) { nameInput.value = p.name; loadLastTimeSoon(); }   // set in code: no input event fires
       if (p.notes) form.querySelector('[name=notes]').value = p.notes;
       if (files.length < meta.files) {
         say(`${meta.files - files.length} of the shared photos couldn’t be loaded. Add them again below.`);

@@ -207,6 +207,20 @@ export COOKBOOK_TOKEN=<READ_TOKEN from /etc/conf.d/cookbooks>
 
 Under Docker, `127.0.0.1` is the container itself; use the host's address (or `host.docker.internal` with `extra_hosts: ["host.docker.internal:host-gateway"]`) and keep that port off the public network.
 
+## Last time
+
+When you're about to cook a dish again, Dinner Log shows what you said the previous times: the date, the rating and the start of the notes (about 140 characters) of up to three earlier dinners, newest first, each linking to that dinner. Above them is a line like *made 6 times · best 9/10*. It appears on a dinner's own page, on the Pick for tonight card, and on the dinner form once the name or the recipe you picked is settled. A dish you've never made shows nothing.
+
+What counts as the same dish:
+
+- **Same catalog recipe.** Two dinners with the same recipe uid match whatever they were called.
+- **Same name, when either dinner has no recipe uid** (typed by hand, or logged before uids existed). Case, spacing, accents and plurals are ignored: "Leeks tart" is "leek tart", but "Chicken tikka" is not "Chicken tikka masala".
+- **Different recipe uids never match**, even under the same name: two cookbooks' "Chicken soup" are two recipes.
+
+The source (cookbook, restaurant, your own) doesn't matter, so a restaurant's "Burger" and your own "Burger" match by name.
+
+On a dinner's own page (and when editing it) that dinner is left out and the line reads "6 other times"; later dinners are listed too, each with its date. The form fetches its list from `GET /last-time`, a read-only JSON route. It returns notes, so it sits behind the same login as every page and is never token-only, and the service worker doesn't cache it. There is nothing to configure and no data change: older dinners work as they are.
+
 ## Linking the two apps: cooking history
 
 Cookbook Collection shows how often you've cooked each recipe and what you rated it. It reads that from Dinner Log's `GET /api/history`, a read-only list of the dinners it can match to its catalog: ones from a cookbook or website, or with a link. Restaurant and home-recipe dinners without a link are never sent.

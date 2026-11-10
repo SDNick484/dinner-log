@@ -43,6 +43,8 @@
 
   {% if meal.notes %}<p class="notes">{{ meal.notes }}</p>{% endif %}
 
+  {% include "_last_time.html" %}
+
   {% if photos %}
   <div class="gallery">
     {% for p in photos %}

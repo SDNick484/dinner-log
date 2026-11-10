@@ -21,7 +21,7 @@ import urllib.request
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from flask import (Flask, abort, g, redirect, render_template, request,
+from flask import (Flask, abort, g, jsonify, redirect, render_template, request,
                    send_from_directory, url_for)
 from PIL import Image, ImageOps, JpegImagePlugin, UnidentifiedImageError
 
@@ -779,6 +779,89 @@ def _norm(name):
     return " ".join(str(name or "").lower().split())
 
 
+def _name_key(name):
+    """What two dinner names must share to be the same dish: case, spacing, accents, punctuation and
+    singular/plural don't matter, word order and every word do ('Chicken tikka' is not 'Chicken tikka
+    masala'). A name with no ASCII letters at all falls back to its lowercased text, so two unrelated
+    names in another script don't collapse into one empty key."""
+    plain = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().lower()
+    return tuple(_stem(w) for w in re.findall(r"[a-z0-9]+", plain)) or (_norm(name),)
+
+
+def previous_times(recipe_uid, name, exclude_id=None, limit=3):
+    """Earlier dinners of the same dish, newest first: {"count", "best", "recent"}.
+
+    Two dinners are the same dish when both carry a recipe uid and the uids are equal, or when either
+    lacks one and the names match (_name_key). So the same name under two different uids is two recipes,
+    and the relation is symmetric: an old dinner without a uid sees the newer catalog-linked one and the
+    other way round. source_type is ignored, like local_dishes. `exclude_id` drops the dinner in view and
+    nothing else, so a later dinner counts too. `count` and `best` span every match; `recent` holds the
+    newest `limit`, each with the full notes (see last_time_panel for the clipped ones).
+    """
+    uid = parse_cookbook_uid(recipe_uid)
+    key = _name_key(name) if str(name or "").strip() else None
+    out = {"count": 0, "best": None, "recent": []}
+    if uid is None and key is None:
+        return out
+    hits = []
+    for r in db().execute("SELECT id, day, name, rating, cookbook_recipe_uid FROM meals "
+                          "ORDER BY day DESC, id DESC"):
+        if r["id"] == exclude_id:
+            continue
+        theirs = parse_cookbook_uid(r["cookbook_recipe_uid"])
+        if uid and theirs:
+            same = uid == theirs
+        else:
+            same = key is not None and _name_key(r["name"]) == key
+        if same:
+            hits.append(r)
+    out["count"] = len(hits)
+    out["best"] = max((r["rating"] for r in hits if r["rating"] is not None), default=None)
+    shown = hits[:max(0, int(limit))]
+    notes = {}
+    if shown:
+        marks = ",".join("?" * len(shown))
+        notes = {r["id"]: r["notes"] for r in
+                 db().execute(f"SELECT id, notes FROM meals WHERE id IN ({marks})", [r["id"] for r in shown])}
+    out["recent"] = [{"id": r["id"], "day": r["day"], "rating": r["rating"], "notes": notes.get(r["id"], "")}
+                     for r in shown]
+    return out
+
+
+LAST_TIME_NOTE_CHARS = 140
+
+
+def _clip(text, limit=LAST_TIME_NOTE_CHARS):
+    """One line of at most `limit` characters: whitespace collapsed, cut with an ellipsis."""
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
+def last_time_summary(count, best, other=False):
+    """'made 6 times · best 9/10'. `other` is for the page of a dinner that is itself one of them."""
+    if not count:
+        return ""
+    if other:
+        head = "made 1 other time" if count == 1 else f"made {count} other times"
+    else:
+        head = "made once" if count == 1 else f"made {count} times"
+    return head + (f" · best {best}/10" if best is not None else "")
+
+
+def last_time_panel(recipe_uid, name, exclude_id=None, other=False):
+    """previous_times, ready for the page and the JSON route: a summary line and, per dinner, a date
+    label, a link and the notes clipped to one line. The full notes never leave through here."""
+    lt = previous_times(recipe_uid, name, exclude_id)
+    return {
+        "count": lt["count"],
+        "best": lt["best"],
+        "summary": last_time_summary(lt["count"], lt["best"], other),
+        "recent": [{"id": t["id"], "day": t["day"], "when": f"{pretty_day(t['day'])}, {t['day'][:4]}",
+                    "rating": t["rating"], "notes": _clip(t["notes"]),
+                    "url": url_for("meal_detail", meal_id=t["id"])} for t in lt["recent"]],
+    }
+
+
 def local_dishes(today, source="", rest_days=REST_DAYS, rating_min=None):
     """Every past dish eligible for a suggestion, as dicts ready for the card.
 
@@ -1003,6 +1086,9 @@ def index():
     suggestion, pick_info = (pick_for_tonight(source=cur_source, fav=cur_fav == "1", mode=pick_mode or None,
                                               include=include, exclude=exclude)
                              if suggest == "1" else (None, None))
+    # Tonight isn't logged yet, so every earlier time counts: nothing to exclude.
+    last_time = (last_time_panel(suggestion.get("cookbook_recipe_uid"), suggestion["name"])
+                 if suggestion else None)
 
     return render_template(
         "index.html",
@@ -1018,6 +1104,7 @@ def index():
         pick_modes=PICK_MODES,
         cur_mode=pick_mode or ("fav" if cur_fav == "1" else "any"),
         older=older,
+        last_time=last_time,
     )
 
 
@@ -1132,7 +1219,9 @@ def meal_detail(meal_id):
     skipped = request.args.get("skipped", "")
     return render_template("detail.html", meal=meal, photos=photos, types=SOURCE_TYPES,
                            skipped=int(skipped) if skipped.isdigit() else 0,
-                           supported_formats=supported_formats_label())
+                           supported_formats=supported_formats_label(),
+                           last_time=last_time_panel(meal["cookbook_recipe_uid"], meal["name"],
+                                                     exclude_id=meal_id, other=True))
 
 
 @app.route("/meal/<int:meal_id>/edit", methods=["GET", "POST"])
@@ -1175,6 +1264,24 @@ def delete_meal(meal_id):
     db().commit()
     remove_photo_files(names)
     return redirect(url_for("index"))
+
+
+LAST_TIME_NAME_CHARS = 200
+
+
+@app.route("/last-time")
+def last_time_route():
+    """JSON for the form's "Last time" panel: ?uid=<recipe uid>&name=<dinner name>&exclude=<meal id>.
+
+    It carries notes, so it sits behind the normal gate like every page (not a @bearer_route) and the
+    browser may not keep it. Notes are clipped to one line here; read-only, no side effects. `exclude`
+    is the dinner being edited, which also switches the summary to "N other times"."""
+    exclude = parse_cookbook_id(request.args.get("exclude"))
+    panel = last_time_panel(request.args.get("uid"), request.args.get("name", "")[:LAST_TIME_NAME_CHARS],
+                            exclude_id=exclude, other=exclude is not None)
+    resp = jsonify(panel)
+    resp.headers["Cache-Control"] = "private, no-store"
+    return resp
 
 
 @app.route("/photos/<path:filename>")

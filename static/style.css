@@ -156,3 +156,19 @@ legend { font-size: .85rem; color: var(--muted); font-weight: 600; padding: 0 6p
   border: 1px solid var(--line); border-radius: 12px; }
 .pick-form label { display: grid; gap: 4px; font-size: .85rem; color: var(--muted); font-weight: 600; }
 .pick-note { margin: 0; font-size: .8rem; color: var(--muted); }
+
+/* "Last time": earlier dinners of the same dish (detail page, pick card, form) */
+.last-time { display: grid; gap: 6px; margin: 12px 0; padding: 10px 12px; background: var(--card);
+  border: 1px solid var(--line); border-radius: 12px; }
+.last-time-head { margin: 0; font-size: .75rem; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--muted); }
+.last-time-sum { margin-left: 6px; text-transform: none; letter-spacing: 0; font-weight: 600; }
+.last-time-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.lt-line { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 6px 0; color: var(--fg);
+  text-decoration: none; border-top: 1px solid var(--line); }
+.last-time-list li:first-child .lt-line { border-top: 0; }
+.lt-line:active { background: var(--line); }
+.lt-when { font-size: .85rem; font-weight: 600; }
+.lt-line .score { margin-left: 0; font-size: .85rem; }
+.lt-notes { flex-basis: 100%; font-size: .85rem; color: var(--muted); overflow-wrap: anywhere; }
+.last-time[hidden] { display: none; }

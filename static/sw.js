@@ -99,6 +99,9 @@ self.addEventListener('fetch', e => {
     return;
   }
   if (req.method !== 'GET') return;
+  // Straight to the network: it carries notes and a new URL per typed name, and the cache below
+  // would keep every one of them (it doesn't honour no-store).
+  if (url.pathname === '/last-time') return;
   const keep = !url.searchParams.has('shared');   // one-off share pages aren't worth caching
   e.respondWith(
     fetch(req)
