@@ -779,6 +779,55 @@ def _norm(name):
     return " ".join(str(name or "").lower().split())
 
 
+def _name_key(name):
+    """What two dinner names must share to be the same dish: case, spacing, accents, punctuation and
+    singular/plural don't matter, word order and every word do ('Chicken tikka' is not 'Chicken tikka
+    masala'). A name with no ASCII letters at all falls back to its lowercased text, so two unrelated
+    names in another script don't collapse into one empty key."""
+    plain = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode().lower()
+    return tuple(_stem(w) for w in re.findall(r"[a-z0-9]+", plain)) or (_norm(name),)
+
+
+def previous_times(recipe_uid, name, exclude_id=None, limit=3):
+    """Earlier dinners of the same dish, newest first: {"count", "best", "recent"}.
+
+    Two dinners are the same dish when both carry a recipe uid and the uids are equal, or when either
+    lacks one and the names match (_name_key). So the same name under two different uids is two recipes,
+    and the relation is symmetric: an old dinner without a uid sees the newer catalog-linked one and the
+    other way round. source_type is ignored, like local_dishes. `exclude_id` drops the dinner in view and
+    nothing else, so a later dinner counts too. `count` and `best` span every match; `recent` holds the
+    newest `limit`, each with the full notes (see last_time_panel for the clipped ones).
+    """
+    uid = parse_cookbook_uid(recipe_uid)
+    key = _name_key(name) if str(name or "").strip() else None
+    out = {"count": 0, "best": None, "recent": []}
+    if uid is None and key is None:
+        return out
+    hits = []
+    for r in db().execute("SELECT id, day, name, rating, cookbook_recipe_uid FROM meals "
+                          "ORDER BY day DESC, id DESC"):
+        if r["id"] == exclude_id:
+            continue
+        theirs = parse_cookbook_uid(r["cookbook_recipe_uid"])
+        if uid and theirs:
+            same = uid == theirs
+        else:
+            same = key is not None and _name_key(r["name"]) == key
+        if same:
+            hits.append(r)
+    out["count"] = len(hits)
+    out["best"] = max((r["rating"] for r in hits if r["rating"] is not None), default=None)
+    shown = hits[:max(0, int(limit))]
+    notes = {}
+    if shown:
+        marks = ",".join("?" * len(shown))
+        notes = {r["id"]: r["notes"] for r in
+                 db().execute(f"SELECT id, notes FROM meals WHERE id IN ({marks})", [r["id"] for r in shown])}
+    out["recent"] = [{"id": r["id"], "day": r["day"], "rating": r["rating"], "notes": notes.get(r["id"], "")}
+                     for r in shown]
+    return out
+
+
 def local_dishes(today, source="", rest_days=REST_DAYS, rating_min=None):
     """Every past dish eligible for a suggestion, as dicts ready for the card.
 
