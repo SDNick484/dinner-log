@@ -48,6 +48,7 @@ Environment variables (see `.env.example`):
 | `COOKBOOK_URL` | (unset)    | Base URL of a Cookbook Collection instance, e.g. `https://cookbooks.example.com`; enables catalog autocomplete and links. A bare host gets `https://` added (`http://` for localhost and private addresses) |
 | `COOKBOOK_API_URL` | `COOKBOOK_URL` | Address this server uses to call Cookbook Collection. Set it to the private one (e.g. `http://127.0.0.1:8767`) when both run on one host |
 | `COOKBOOK_TOKEN` | (unset) | Cookbook Collection's `READ_TOKEN`; lets "Pick for tonight" draw on its recipes |
+| `VISITS_TOKEN` | (unset; the Alpine installer generates one) | Lets Hometown Table read restaurant dinners from `/api/restaurant-visits` (see *Linking the two apps: restaurant visits*). Separate from `HISTORY_TOKEN`. Unset, the endpoint doesn't exist |
 | `HISTORY_TOKEN` | (unset; the Alpine installer generates one) | Lets Cookbook Collection read cooking history from `/api/history` (see *Linking the two apps*). Unset, the endpoint doesn't exist |
 | `TRUSTED_ORIGINS` | (unset) | Extra comma-separated origins allowed to POST (see Security). Rarely needed. |
 | `BACKUP_DIR` | `DATA_DIR/backups` (Alpine installer: `/var/backups/dinner-log`) | Where `backup.py` writes nightly database snapshots (see Backups) |
@@ -242,6 +243,22 @@ Dinners logged from Cookbook Collection (**Log tonight** on a catalog pick, the 
 Typing over the name, cookbook or page afterwards clears all four. Older dinners have none and are matched by title and page as before. `/api/history` sends all four; the fields are additive, so it's still version 1.
 
 Upgrading: deploy Dinner Log first (the Alpine installer fills in `HISTORY_TOKEN` if it's empty), then upgrade Cookbook Collection and give it the URL and token. Either order works: each side ignores fields the other doesn't send yet. New columns are added on start and existing dinners aren't changed.
+
+## Linking to Hometown Table: restaurant visits
+
+Hometown Table keeps per-place visit history for small local restaurants. It pulls Dinner Log's `GET /api/restaurant-visits` once a day, so a restaurant dinner logged here shows up there as a visit without typing it twice.
+
+The endpoint exists only when `VISITS_TOKEN` is set (its own token, not `HISTORY_TOKEN`: each consumer gets one), and every request must send it as `Authorization: Bearer <token>`; a missing or wrong token gets 401. Hometown Table's `DINNER_LOG_TOKEN` must hold the same value. The Alpine installer generates `VISITS_TOKEN` if it's missing or empty and never replaces one you've set (`grep VISITS_TOKEN /etc/conf.d/dinner-log`); with Docker, set it in `.env`. As with the history feed, point Hometown Table at the private address.
+
+`GET /api/restaurant-visits?after=<id>&limit=<n>` (`after` default 0; `limit` 1 to 500, default 200, clamped) returns dinners logged with source *Restaurant* and a restaurant name, oldest id first, only those with an id above `after`:
+
+```json
+{"version": 1,
+ "visits": [{"ref": "123", "day": "2026-11-14", "name": "Casa Ejemplo", "location": "Concord", "dish": "Al pastor tacos"}],
+ "next": 123}
+```
+
+`ref` is the dinner's id as a string, `name` the restaurant, `location` its location or `null`, `dish` the dinner's name or `null`. `next` is the last id returned (or `after` when nothing is new): pass it as `after` to resume. Nothing else leaves: no notes, ratings or photos. Edits and deletes made after a dinner was fetched aren't sent again.
 
 ### Showing dinner photos on the cookbook page
 

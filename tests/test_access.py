@@ -320,8 +320,9 @@ def test_exemptions_are_explicit(app_on):
     assert {ep for ep, kind in exempt.items() if kind == "public"} == {"healthz"}
     assert set(exempt.values()) <= {"public", "bearer"}
     bearer = [ep for ep, kind in exempt.items() if kind == "bearer"]
-    assert sorted(bearer) == ["history", "shared_photo"]
+    assert sorted(bearer) == ["history", "restaurant_visits", "shared_photo"]
     a.HISTORY_TOKEN = "h" * 64                         # set, so the route exists and must check it
+    a.VISITS_TOKEN = "v" * 64
     for rule in a.app.url_map.iter_rules():
         if rule.endpoint in bearer:
             assert get(c, rule.rule).status_code in (401, 404), rule.rule
@@ -415,3 +416,13 @@ def test_bad_token_never_falls_back_to_lan(lan_on):
 def test_lan_access_flag(tmp_path, env, raw, on):
     env.setenv("LAN_ACCESS", raw)
     assert load_app(tmp_path).LAN_ACCESS is on
+
+
+def test_visits_work_by_bearer_only(tmp_path, env):
+    env.setenv("VISITS_TOKEN", "v" * 64)
+    _, c, _, _ = boot(tmp_path, env)
+    ok = get(c, "/api/restaurant-visits", peer={"REMOTE_ADDR": "127.0.0.1"}, base="http://127.0.0.1:8000",
+             Authorization="Bearer " + "v" * 64)
+    assert ok.status_code == 200 and ok.json["version"] == 1
+    assert get(c, "/api/restaurant-visits").status_code == 401
+    assert via_cf(c, token(), "/api/restaurant-visits").status_code == 401   # an Access login isn't the token

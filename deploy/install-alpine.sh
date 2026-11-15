@@ -104,7 +104,8 @@ set_conf "export LAN_ACCESS" "" "1 = with Access verification on, also let in di
 set_conf "export LAN_CIDRS" "" "Networks LAN_ACCESS allows (empty = loopback + private ranges)" ""
 set_conf "export LAN_HOSTS" "" "Host names LAN_ACCESS accepts besides IP addresses, e.g. dinners.lan" ""
 sh "$SRC/deploy/history-token.sh" "$CONF"  # made once if missing or empty; never replaced
-chmod 600 "$CONF"  # holds COOKBOOK_TOKEN and HISTORY_TOKEN; OpenRC reads it as root
+sh "$SRC/deploy/history-token.sh" "$CONF" VISITS_TOKEN "# Token Hometown Table uses to read restaurant visits (optional)"  # same rules
+chmod 600 "$CONF"  # holds COOKBOOK_TOKEN, HISTORY_TOKEN and VISITS_TOKEN; OpenRC reads it as root
 
 echo "==> Installing nightly backup"
 # Always installed: on a host where Cookbook Collection's app-backup runs, the job skips itself each night,
@@ -182,3 +183,5 @@ echo "$BACKUP_NOTE"
 echo "Logs: /var/log/dinner-log.log"
 echo "Cookbook Collection reads cooking history with HISTORY_TOKEN: set its DINNERLOG_TOKEN to the same value"
 echo "  (grep HISTORY_TOKEN $CONF)"
+echo "Hometown Table reads restaurant dinners with VISITS_TOKEN: set its DINNER_LOG_TOKEN to the same value"
+echo "  (grep VISITS_TOKEN $CONF)"

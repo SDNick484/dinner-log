@@ -111,3 +111,23 @@ def test_indented_empty_token_is_filled_in_place(tmp_path):
 
 def token_lines_any(conf):
     return [l for l in conf.read_text().splitlines() if re.match(r"^\s*(export )?HISTORY_TOKEN=", l)]
+
+
+VISITS_COMMENT = "# Token Hometown Table uses to read restaurant visits (optional)"
+
+
+def test_named_token_is_generated_beside_the_history_one(tmp_path):
+    conf = tmp_path / "dinner-log"
+    conf.write_text("export HISTORY_TOKEN=mine\n")
+    r = subprocess.run(["sh", SCRIPT, str(conf), "VISITS_TOKEN", VISITS_COMMENT], capture_output=True, text=True)
+    assert r.returncode == 0 and "VISITS_TOKEN: generated" in r.stdout
+    lines = conf.read_text().splitlines()
+    assert lines[0] == "export HISTORY_TOKEN=mine" and lines[1] == VISITS_COMMENT
+    assert re.fullmatch(r"export VISITS_TOKEN=[0-9a-f]{64}", lines[2]) and lines[2][len("export VISITS_TOKEN="):] not in r.stdout
+    again = subprocess.run(["sh", SCRIPT, str(conf), "VISITS_TOKEN", VISITS_COMMENT], capture_output=True, text=True)
+    assert "VISITS_TOKEN: kept" in again.stdout and conf.read_text().splitlines() == lines
+
+
+def test_installer_makes_the_visits_token_too():
+    src = open(os.path.join(ROOT, "deploy", "install-alpine.sh")).read()
+    assert 'history-token.sh" "$CONF" VISITS_TOKEN' in src
