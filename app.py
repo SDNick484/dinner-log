@@ -557,6 +557,7 @@ COOKBOOK_API_URL = base_url(os.environ.get("COOKBOOK_API_URL")) or COOKBOOK_URL
 COOKBOOK_TOKEN = os.environ.get("COOKBOOK_TOKEN", "").strip()  # Cookbook Collection's READ_TOKEN
 # Lets Cookbook Collection read cooking history from /api/history. Unset: the route doesn't exist.
 HISTORY_TOKEN = os.environ.get("HISTORY_TOKEN", "").strip()
+VISITS_TOKEN = os.environ.get("VISITS_TOKEN", "").strip()  # Hometown Table's restaurant-visits feed; its own token
 _cookbook_cache = {"cached_at": 0, "titles": [], "ids": {}}
 _recipe_cache = {}  # book id -> (fetched_at, catalog title, [{"id", "uid", "name", "page"}], book uid)
 RECIPE_TTL = 120
@@ -1352,15 +1353,20 @@ def history_rows(con):
     return meals
 
 
-def history_token_refusal():
-    """None when the request carries HISTORY_TOKEN as a bearer token, else the response to send: 404 while
-    no token is configured (the history routes don't exist), 401 for a missing or wrong one."""
-    if not HISTORY_TOKEN:
+def bearer_refusal(token):
+    """None when the request carries `token` as a bearer token, else the response to send: 404 while no
+    token is configured (the route doesn't exist), 401 for a missing or wrong one."""
+    if not token:
         abort(404)
     auth = request.headers.get("Authorization", "")
-    if auth[:7].lower() != "bearer " or not hmac.compare_digest(auth[7:].strip().encode(), HISTORY_TOKEN.encode()):
+    if auth[:7].lower() != "bearer " or not hmac.compare_digest(auth[7:].strip().encode(), token.encode()):
         return {"error": "unauthorized"}, 401
     return None
+
+
+def history_token_refusal():
+    """bearer_refusal for HISTORY_TOKEN (Cookbook Collection's routes)."""
+    return bearer_refusal(HISTORY_TOKEN)
 
 
 @app.route("/api/history")
@@ -1377,6 +1383,39 @@ def history():
     if request.headers.get("If-None-Match") == etag:
         return "", 304, headers
     return body, 200, {**headers, "Content-Type": "application/json"}
+
+
+VISITS_VERSION = 1
+VISITS_DEFAULT_LIMIT, VISITS_MAX_LIMIT = 200, 500
+
+
+@app.route("/api/restaurant-visits")
+@bearer_route
+def restaurant_visits():
+    """Read-only feed of restaurant dinners for Hometown Table, behind VISITS_TOKEN (not HISTORY_TOKEN).
+    Keyset-paged on meal id: ?after=<id> (default 0) & limit=<1..500> (default 200, clamped). Sends only
+    the restaurant, its location, the day and the dish: never notes, ratings or photos. Edits and deletes
+    after a dinner was fetched are not propagated."""
+    refused = bearer_refusal(VISITS_TOKEN)
+    if refused:
+        return refused
+    try:
+        after = int(request.args.get("after", "0"))
+        limit = int(request.args.get("limit", str(VISITS_DEFAULT_LIMIT)))
+    except ValueError:
+        return {"error": "after and limit must be integers"}, 400
+    if not 0 <= after < 2**63:  # SQLite integers are 64-bit
+        return {"error": "after is out of range"}, 400
+    limit = max(1, min(limit, VISITS_MAX_LIMIT))
+    rows = db().execute(
+        "SELECT id, day, name, source_title, source_detail FROM meals "
+        "WHERE source_type = 'restaurant' AND TRIM(source_title) != '' AND id > ? ORDER BY id LIMIT ?",
+        (after, limit)).fetchall()
+    visits = [{"ref": str(r["id"]), "day": r["day"], "name": r["source_title"].strip(),
+               "location": r["source_detail"].strip() or None, "dish": r["name"].strip() or None} for r in rows]
+    body = {"version": VISITS_VERSION, "visits": visits, "next": rows[-1]["id"] if rows else after}
+    return json.dumps(body, separators=(",", ":")), 200, {"Content-Type": "application/json",
+                                                           "Cache-Control": "private, no-store"}
 
 
 SHARED_FILE_RE = re.compile(r"[0-9a-f]{32}\.jpg")  # save_photos' names; never a -t.jpg thumbnail
