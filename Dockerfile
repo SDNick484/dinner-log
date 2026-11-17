@@ -1,4 +1,4 @@
-FROM python:3.12-alpine
+FROM python:3.15-alpine
 WORKDIR /app
 # su-exec: drop from root to the app user after fixing data-dir ownership.
 # Fixed uid/gid 10001 so ./data's owner on the host is stable across rebuilds.
